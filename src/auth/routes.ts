@@ -146,19 +146,132 @@ function isOriginAllowed(originHeader: string): boolean {
   );
 }
 
-function failureHtml(reason: string): string {
-  // Minimal failure page. PLAN §11 may upgrade to richer template later.
-  const safeReason = reason.replace(/[<>&"']/g, (ch) =>
+function escapeHtml(s: string): string {
+  return s.replace(/[<>&"']/g, (ch) =>
     ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : ch === '&' ? '&amp;' : ch === '"' ? '&quot;' : '&#39;',
   );
+}
+
+function failureHtml(reason: string): string {
+  // Minimal failure page. PLAN §11 may upgrade to richer template later.
+  const safeReason = escapeHtml(reason);
   return `<!doctype html>
 <meta charset="utf-8">
 <title>Login failed</title>
 <body style="font-family:system-ui,sans-serif;max-width:40em;margin:4em auto;line-height:1.5">
   <h1>Login failed</h1>
   <p>Reason: <code>${safeReason}</code></p>
-  <p><a href="/auth/login">Try again</a></p>
+  <p><a href="/login">Try again</a></p>
 </body>`;
+}
+
+// Server-rendered landing page at /login. Stage-A precursor to PLAN §15's
+// React `Login.tsx`. requireAuth's denial path redirects unauthenticated
+// browser users here (rather than straight to /auth/login) so the user
+// sees a click-to-continue surface before getting redirected to Microsoft.
+//
+// returnTo is sanitized via sanitizeReturnTo() before being passed into
+// the button's href — open-redirect guard. The same sanitizer runs again
+// inside /auth/login, so this is defense-in-depth.
+function loginLandingHtml(returnTo: string): string {
+  const safeReturnTo = escapeHtml(sanitizeReturnTo(returnTo));
+  // Microsoft brand: four-square logo (rendered inline) + "Sign in with
+  // Microsoft" label, on a white pill button. Matches the visual pattern
+  // of Microsoft's published sign-in button without using their exact
+  // brand asset (which has licensing terms we don't need to engage).
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — ClaudeClaw</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+  }
+  .card {
+    width: min(420px, 92vw);
+    padding: 2.5rem 2rem;
+    background: #1e293b;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    text-align: center;
+  }
+  .card h1 {
+    margin: 0 0 0.25rem 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .card p.sub {
+    margin: 0 0 2rem 0;
+    color: #94a3b8;
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+  .signin-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.75rem 1.25rem;
+    background: #ffffff;
+    color: #1f2937;
+    border-radius: 8px;
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .signin-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  .signin-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  }
+  .signin-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  .footer {
+    margin-top: 2rem;
+    font-size: 0.8rem;
+    color: #64748b;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sign in to ClaudeClaw</h1>
+    <p class="sub">Authenticate with your Microsoft work account to continue.</p>
+    <a class="signin-btn" href="/auth/login?returnTo=${safeReturnTo}">
+      <svg viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="1"  y="1"  width="9.5" height="9.5" fill="#F25022"/>
+        <rect x="12.5" y="1" width="9.5" height="9.5" fill="#7FBA00"/>
+        <rect x="1"  y="12.5" width="9.5" height="9.5" fill="#00A4EF"/>
+        <rect x="12.5" y="12.5" width="9.5" height="9.5" fill="#FFB900"/>
+      </svg>
+      Sign in with Microsoft
+    </a>
+    <p class="footer">Secure login powered by Microsoft Entra ID.</p>
+  </div>
+</body>
+</html>`;
+}
+
+function handleLoginPage(c: Context): Response {
+  const returnTo = c.req.query('returnTo') ?? '/';
+  return c.html(loginLandingHtml(returnTo));
 }
 
 // ── Route handlers ──────────────────────────────────────────────────
@@ -501,6 +614,7 @@ async function handleLogout(c: Context): Promise<Response> {
 // ── Mount helper ────────────────────────────────────────────────────
 
 export function registerAuthRoutes(app: Hono): void {
+  app.get('/login', handleLoginPage);
   app.get('/auth/login', handleLogin);
   app.get('/auth/callback', handleCallback);
   app.post('/auth/logout', handleLogout);

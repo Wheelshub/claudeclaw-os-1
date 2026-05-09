@@ -91,25 +91,25 @@ describe('requireAuth gates the previously-inline-gated branches', () => {
       process.env.DASHBOARD_LEGACY = 'true';
     });
 
-    it('no auth → 302 redirect to /auth/login', async () => {
+    it('no auth → 302 redirect to /login landing page', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(302);
-      expect(res.headers.get('location')).toContain('/auth/login?returnTo=');
+      expect(res.headers.get('location')).toContain('/login?returnTo=');
     });
 
-    it('?token= → not 401, not 302 to /auth/login', async () => {
+    it('?token= → not 401, not redirected to a login page', async () => {
       const res = await app.request('/?token=' + TOKEN);
       expect(res.status).not.toBe(401);
       const loc = res.headers.get('location') || '';
-      expect(loc.includes('/auth/login')).toBe(false);
+      expect(loc.includes('/login')).toBe(false);
     });
 
-    it('valid session cookie → not 401, not 302 to /auth/login', async () => {
+    it('valid session cookie → not 401, not redirected to a login page', async () => {
       const cookie = forgeValidSessionCookie();
       const res = await app.request('/', { headers: withCookie({}, cookie) });
       expect(res.status).not.toBe(401);
       const loc = res.headers.get('location') || '';
-      expect(loc.includes('/auth/login')).toBe(false);
+      expect(loc.includes('/login')).toBe(false);
     });
   });
 
@@ -119,26 +119,26 @@ describe('requireAuth gates the previously-inline-gated branches', () => {
     ['/warroom/text'],
     ['/warroom-test-audio'],
   ])('GET %s', (urlPath) => {
-    it('no auth → 302 redirect to /auth/login', async () => {
+    it('no auth → 302 redirect to /login landing page', async () => {
       const res = await app.request(urlPath);
       expect(res.status).toBe(302);
-      expect(res.headers.get('location')).toContain('/auth/login?returnTo=');
+      expect(res.headers.get('location')).toContain('/login?returnTo=');
     });
 
-    it('?token= → not 401, not 302 to /auth/login', async () => {
+    it('?token= → not 401, not redirected to a login page', async () => {
       const sep = urlPath.includes('?') ? '&' : '?';
       const res = await app.request(`${urlPath}${sep}token=${TOKEN}`);
       expect(res.status).not.toBe(401);
       const loc = res.headers.get('location') || '';
-      expect(loc.includes('/auth/login')).toBe(false);
+      expect(loc.includes('/login')).toBe(false);
     });
 
-    it('valid session cookie → not 401, not 302 to /auth/login', async () => {
+    it('valid session cookie → not 401, not redirected to a login page', async () => {
       const cookie = forgeValidSessionCookie();
       const res = await app.request(urlPath, { headers: withCookie({}, cookie) });
       expect(res.status).not.toBe(401);
       const loc = res.headers.get('location') || '';
-      expect(loc.includes('/auth/login')).toBe(false);
+      expect(loc.includes('/login')).toBe(false);
     });
   });
 });

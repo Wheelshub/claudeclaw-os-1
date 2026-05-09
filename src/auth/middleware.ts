@@ -152,7 +152,10 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
     }
   }
 
-  // 4. Denial. /api/ → 401 JSON; everything else → 302 to /auth/login.
+  // 4. Denial. /api/ → 401 JSON; everything else → 302 to /login (the
+  // landing page with a "Sign in with Microsoft" button). Browser users
+  // get a clickable surface before being redirected to Microsoft; API
+  // clients get a clean machine-readable 401.
   if (path.startsWith('/api/')) {
     // Match the legacy middleware's casing exactly so existing contract
     // tests (and any frontend code that string-matches on the body) keep
@@ -160,5 +163,5 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   const returnTo = encodeURIComponent(path + (url.search || ''));
-  return c.redirect(`/auth/login?returnTo=${returnTo}`, 302);
+  return c.redirect(`/login?returnTo=${returnTo}`, 302);
 };

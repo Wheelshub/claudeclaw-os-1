@@ -107,23 +107,23 @@ describe('auth gate', () => {
 
   // Legacy mode HTML embeds DASHBOARD_TOKEN, so those variants MUST stay
   // gated. PLAN §12 unified the gate to requireAuth — non-API paths now
-  // 302 to /auth/login (browser redirect) rather than 401 JSON.
+  // 302 to /login (the landing page added in §14.5) rather than 401 JSON.
   it('blocks legacy /warroom?mode=picker without a token (HTML embeds token)', async () => {
     const res = await app.request('/warroom?mode=picker');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('/auth/login?returnTo=');
+    expect(res.headers.get('location')).toContain('/login?returnTo=');
   });
 
   it('blocks legacy /warroom?mode=voice without a token (HTML embeds token)', async () => {
     const res = await app.request('/warroom?mode=voice');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('/auth/login?returnTo=');
+    expect(res.headers.get('location')).toContain('/login?returnTo=');
   });
 
   it('blocks legacy /warroom/text without a token (HTML embeds token)', async () => {
     const res = await app.request('/warroom/text?meetingId=wr_test');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('/auth/login?returnTo=');
+    expect(res.headers.get('location')).toContain('/login?returnTo=');
   });
 
   // Regression: the CSRF middleware reads its allowed-origin host from

@@ -29,6 +29,10 @@ const REQUIRED_KEYS = [
   'SESSION_SECRET',
   'DASHBOARD_URL',
   'DASHBOARD_TOKEN',
+  // DB_ENCRYPTION_KEY isn't strictly OIDC, but initDatabase() refuses to
+  // start without it and the dashboard immediately calls initDatabase().
+  // Catch at prestart instead of letting initDatabase throw a stack trace.
+  'DB_ENCRYPTION_KEY',
 ] as const;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -97,6 +101,12 @@ check(
   'SESSION_SECRET',
   (v) => HEX_RE.test(v) && v.length >= 64,
   'must be at least 64 hex chars (generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")',
+);
+
+check(
+  'DB_ENCRYPTION_KEY',
+  (v) => HEX_RE.test(v) && v.length >= 64,
+  'must be at least 64 hex chars for SQLCipher (generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"). This key encrypts the SQLite store; if you ever lose it, the DB is unrecoverable. Keep a backup.',
 );
 
 check('ENTRA_APP_ROLE_VALUE', (v) => v.length > 0, 'must be non-empty');
