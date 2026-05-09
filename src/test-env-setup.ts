@@ -19,3 +19,9 @@ process.env.OIDC_ENABLED = process.env.OIDC_ENABLED || 'true';
 process.env.SESSION_AUTH_ENABLED = process.env.SESSION_AUTH_ENABLED || 'true';
 // Entra app role for session validation in requireAuth's session path.
 process.env.ENTRA_APP_ROLE_VALUE = process.env.ENTRA_APP_ROLE_VALUE || 'Dashboard.User';
+// PLAN §13 redirect URI selection: tests run with TRUST_PROXY=false so
+// scheme is 'http'; the dev URI must point at localhost for the validator
+// to accept it. This isn't a real Entra app — it's just a syntactically
+// valid value so /auth/login doesn't 500 with `dev-redirect-uri-missing`.
+process.env.ENTRA_REDIRECT_URI_DEV =
+  process.env.ENTRA_REDIRECT_URI_DEV || 'http://localhost:3141/auth/callback';

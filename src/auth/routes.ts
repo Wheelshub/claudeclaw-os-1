@@ -58,10 +58,63 @@ import {
 // Module-scoped; Node single-threadedness makes plain ++/-- safe.
 let inflightCallbacks = 0;
 
-function selectRedirectUri(c: Context): string {
-  return getEffectiveScheme(c) === 'https'
-    ? ENTRA_REDIRECT_URI_PROD || ''
-    : ENTRA_REDIRECT_URI_DEV || '';
+// PLAN §13: redirect URI selection. Effective host comes from
+// configuration only — never from the Host or X-Forwarded-Host header.
+// Rules:
+//   - https + DASHBOARD_URL set + ENTRA_REDIRECT_URI_PROD host == DASHBOARD_URL host
+//     → ENTRA_REDIRECT_URI_PROD
+//   - http + ENTRA_REDIRECT_URI_DEV host is localhost
+//     → ENTRA_REDIRECT_URI_DEV
+//   - Anything else → fail closed; do NOT call Entra
+//
+// The host-match check defends against operator misconfiguration where
+// ENTRA_REDIRECT_URI_PROD points to a different domain than DASHBOARD_URL
+// (typo, stale env). Without it, /auth/login would happily build an
+// authorize URL whose redirect_uri lands on the wrong host post-handshake.
+type RedirectUriResult =
+  | { ok: true; uri: string }
+  | { ok: false; reason: string };
+
+function validateRedirectUriSelection(c: Context): RedirectUriResult {
+  const scheme = getEffectiveScheme(c);
+  if (scheme === null) {
+    // trustProxyValidator already 400'd; defensive only.
+    return { ok: false, reason: 'unknown-scheme' };
+  }
+  if (scheme === 'https') {
+    const prodUri = (ENTRA_REDIRECT_URI_PROD || '').trim();
+    const dashUrl = (DASHBOARD_URL || '').trim();
+    if (!prodUri) return { ok: false, reason: 'prod-redirect-uri-missing' };
+    if (!dashUrl) return { ok: false, reason: 'dashboard-url-missing' };
+    let prodHost: string;
+    let dashHost: string;
+    try {
+      prodHost = new URL(prodUri).host;
+      dashHost = new URL(dashUrl).host;
+    } catch {
+      return { ok: false, reason: 'redirect-uri-malformed' };
+    }
+    if (prodHost !== dashHost) {
+      return { ok: false, reason: 'redirect-uri-host-mismatch' };
+    }
+    return { ok: true, uri: prodUri };
+  }
+  // scheme === 'http'
+  const devUri = (ENTRA_REDIRECT_URI_DEV || '').trim();
+  if (!devUri) return { ok: false, reason: 'dev-redirect-uri-missing' };
+  let devHost: string;
+  try {
+    devHost = new URL(devUri).hostname;
+  } catch {
+    return { ok: false, reason: 'redirect-uri-malformed' };
+  }
+  // PLAN §13: http path is for localhost dev only.
+  const isLocalhost =
+    devHost === 'localhost' || devHost === '127.0.0.1' || devHost === '[::1]';
+  if (!isLocalhost) {
+    return { ok: false, reason: 'dev-redirect-uri-not-localhost' };
+  }
+  return { ok: true, uri: devUri };
 }
 
 // Origin allowlist for /auth/logout (separate from CORS — handles the
@@ -171,18 +224,18 @@ async function handleLogin(c: Context): Promise<Response> {
   const pkceVerifier = randomPKCECodeVerifier();
   const codeChallenge = await calculatePKCECodeChallenge(pkceVerifier);
   const txBinding = generateTxBinding();
-  const redirectUri = selectRedirectUri(c);
-
-  if (!redirectUri) {
+  const redirectResult = validateRedirectUriSelection(c);
+  if (!redirectResult.ok) {
     appendAuthAuditBestEffort({
       event: 'login.failure',
-      reason: 'no-redirect-uri',
+      reason: redirectResult.reason,
       details: { scheme: getEffectiveScheme(c) },
       ip,
       userAgent,
     });
-    return c.html(failureHtml('redirect-uri-not-configured'), 500);
+    return c.html(failureHtml(redirectResult.reason), 500);
   }
+  const redirectUri = redirectResult.uri;
 
   // Persist the in-flight request row
   saveOidcRequest({
@@ -325,10 +378,25 @@ async function handleCallback(c: Context): Promise<Response> {
       return c.html(failureHtml(reason), 502);
     }
 
-    const expectedRedirectUri = selectRedirectUri(c);
+    // PLAN §13: recompute the redirect URI selection and validate that
+    // it matches the row stored at /auth/login time. If config drifted
+    // mid-session (operator changed env vars between login + callback)
+    // OR proxy header semantics changed → fail closed.
+    const recheck = validateRedirectUriSelection(c);
+    if (!recheck.ok) {
+      appendAuthAuditBestEffort({
+        event: 'login.failure',
+        reason: recheck.reason,
+        state: state.slice(0, 8),
+        ip,
+        userAgent,
+      });
+      c.header('Set-Cookie', buildTxBindingClearCookieHeader(isHttps));
+      return c.html(failureHtml(recheck.reason), 500);
+    }
     const validation = checkAuthorizationClaims({
       claims: exchange.claims,
-      expectedRedirectUri,
+      expectedRedirectUri: recheck.uri,
       redirectUriUsedAtAuthorize: oidcRequest.redirectUri,
     });
 

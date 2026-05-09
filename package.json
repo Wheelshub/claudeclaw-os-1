@@ -7,9 +7,12 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:web": "vite",
+    "dev:dashboard": "tsx scripts/dashboard-dev.ts",
+    "predev:dashboard": "tsx scripts/check-env.ts",
     "build": "vite build && tsc",
     "build:web": "vite build",
     "build:server": "tsc",
+    "prestart": "tsx scripts/check-env.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
