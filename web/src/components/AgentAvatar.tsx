@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { dashboardToken } from '@/lib/api';
+import { authUrl } from '@/lib/api';
 
 interface Props {
   agentId: string;
@@ -58,10 +58,10 @@ export function AgentAvatar({ agentId, name, size = 36, running, cacheBust }: Pr
     );
   }
 
-  const cacheBustParam = cacheBust !== undefined ? `&v=${encodeURIComponent(String(cacheBust))}` : '';
+  const cacheBustParam = cacheBust !== undefined ? `?v=${encodeURIComponent(String(cacheBust))}` : '';
   return (
     <img
-      src={`/api/agents/${encodeURIComponent(agentId)}/avatar?token=${encodeURIComponent(dashboardToken)}${cacheBustParam}`}
+      src={authUrl(`/api/agents/${encodeURIComponent(agentId)}/avatar${cacheBustParam}`)}
       alt={name || agentId}
       class="rounded-full shrink-0 object-cover"
       style={{

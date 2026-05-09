@@ -6,7 +6,7 @@ import { Pill, StatusDot } from '@/components/Pill';
 import { Tab } from '@/components/PageHeader';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime, formatCost } from '@/lib/format';
-import { chatId, dashboardToken } from '@/lib/api';
+import { chatId, authUrl, authInit } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { showCosts } from '@/lib/theme';
 
@@ -75,10 +75,10 @@ function Header({ agent }: { agent: Agent }) {
     try {
       const form = new FormData();
       form.append('image', file);
-      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar?token=${encodeURIComponent(dashboardToken)}`, {
-        method: 'PUT',
-        body: form,
-      });
+      const res = await fetch(
+        authUrl(`/api/agents/${encodeURIComponent(agent.id)}/avatar`),
+        authInit({ method: 'PUT', body: form }),
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as any).error || `HTTP ${res.status}`);
@@ -102,9 +102,10 @@ function Header({ agent }: { agent: Agent }) {
     if (!confirm(`Remove the custom avatar for ${agent.id}? The dashboard will fall back to Telegram's avatar (if set) or initials.`)) return;
     setBusy(true);
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar?token=${encodeURIComponent(dashboardToken)}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(
+        authUrl(`/api/agents/${encodeURIComponent(agent.id)}/avatar`),
+        authInit({ method: 'DELETE' }),
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as any).error || `HTTP ${res.status}`);

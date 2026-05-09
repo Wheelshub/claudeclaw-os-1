@@ -115,7 +115,7 @@ import {
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT, USE_SESSION_AUTH } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
@@ -371,6 +371,18 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // for the rewrite — see SHIP-CHECKLIST and the rewrite plan).
   const legacyMode = (process.env.DASHBOARD_LEGACY || '').toLowerCase() === 'true';
   const newDashboardIndex = path.join(PROJECT_ROOT, 'dist', 'web', 'index.html');
+
+  // PLAN §15: inject `<meta name="ccd-use-session-auth">` into the SPA shell
+  // so the frontend can switch its fetch wrapper between token and cookie
+  // auth without a separate runtime config endpoint. Read at request time so
+  // flipping USE_SESSION_AUTH in env + restart is sufficient.
+  function spaShellHtml(): string {
+    const html = fs.readFileSync(newDashboardIndex, 'utf-8');
+    const meta = `<meta name="ccd-use-session-auth" content="${USE_SESSION_AUTH ? 'true' : 'false'}" />`;
+    if (html.includes('name="ccd-use-session-auth"')) return html;
+    return html.replace('</head>', `    ${meta}\n  </head>`);
+  }
+
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
     if (legacyMode || !fs.existsSync(newDashboardIndex)) {
@@ -384,8 +396,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // window.location, falling back to sessionStorage. Serving this
     // unauthenticated means a token-stripped URL still loads the app
     // instead of showing raw 401 JSON.
-    const html = fs.readFileSync(newDashboardIndex, 'utf-8');
-    return c.html(html);
+    return c.html(spaShellHtml());
   });
 
   // Static asset serving for the Vite-built frontend.
@@ -456,7 +467,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
     // v2 SPA shell — no embedded token, safe to serve unauth so a
     // hard-refresh of a token-stripped URL still loads the app.
-    return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
+    return c.html(spaShellHtml());
   });
 
   // Text War Room page. Expects ?meetingId= (created via POST
@@ -2950,8 +2961,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!fs.existsSync(newDashboardIndex)) {
       return c.text('Dashboard not built. Run `npm run build`.', 503);
     }
-    const html = fs.readFileSync(newDashboardIndex, 'utf-8');
-    return c.html(html);
+    return c.html(spaShellHtml());
   });
 
   return app;

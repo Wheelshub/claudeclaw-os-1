@@ -47,6 +47,7 @@ const envConfig = readEnvFile([
   'TRUST_PROXY',
   'OIDC_ENABLED',
   'SESSION_AUTH_ENABLED',
+  'USE_SESSION_AUTH',
   'AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN',
   'AUTH_CALLBACK_RATE_LIMIT_PER_IP_PER_MIN',
   'ENTRA_DISCOVERY_TIMEOUT_MS',
@@ -217,6 +218,14 @@ export const OIDC_ENABLED =
 // Kill switch: when false, requireAuth's session-cookie path is skipped (token-only mode).
 export const SESSION_AUTH_ENABLED =
   (process.env.SESSION_AUTH_ENABLED || envConfig.SESSION_AUTH_ENABLED || 'true').toLowerCase() !== 'false';
+
+// SPA-side flag (PLAN §15 / §16): when true the Vite frontend uses cookie auth
+// (`credentials: 'include'`) instead of `?token=`. Independent from
+// SESSION_AUTH_ENABLED so an operator can keep OIDC infra live while the SPA
+// stays on tokens during Stage A. Injected into the SPA shell via
+// `<meta name="ccd-use-session-auth">`. Default false until Stage B.
+export const USE_SESSION_AUTH =
+  (process.env.USE_SESSION_AUTH || envConfig.USE_SESSION_AUTH || 'false').toLowerCase() === 'true';
 
 export const AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN = parseInt(
   process.env.AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN ||
