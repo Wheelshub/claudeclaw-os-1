@@ -37,6 +37,23 @@ const envConfig = readEnvFile([
   'WARROOM_ENABLED',
   'WARROOM_PORT',
   'STREAM_STRATEGY',
+  'ENTRA_TENANT_ID',
+  'ENTRA_CLIENT_ID',
+  'ENTRA_CLIENT_SECRET',
+  'ENTRA_REDIRECT_URI_PROD',
+  'ENTRA_REDIRECT_URI_DEV',
+  'ENTRA_APP_ROLE_VALUE',
+  'SESSION_SECRET',
+  'TRUST_PROXY',
+  'OIDC_ENABLED',
+  'SESSION_AUTH_ENABLED',
+  'AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN',
+  'AUTH_CALLBACK_RATE_LIMIT_PER_IP_PER_MIN',
+  'ENTRA_DISCOVERY_TIMEOUT_MS',
+  'ENTRA_JWKS_TIMEOUT_MS',
+  'ENTRA_TOKEN_EXCHANGE_TIMEOUT_MS',
+  'AUDIT_RETENTION_DAYS',
+  'AUTH_CALLBACK_MAX_INFLIGHT',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -168,6 +185,78 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+
+// ── Dashboard OIDC (Entra) ──────────────────────────────────────────
+// Microsoft Entra OIDC config for browser session auth on the dashboard.
+// Secrets are runtime-resolved via `op run --` from 1Password; non-secret
+// literals (TRUST_PROXY, *_ENABLED, timeouts) live as plain values in env.
+export const ENTRA_TENANT_ID =
+  process.env.ENTRA_TENANT_ID || envConfig.ENTRA_TENANT_ID || '';
+export const ENTRA_CLIENT_ID =
+  process.env.ENTRA_CLIENT_ID || envConfig.ENTRA_CLIENT_ID || '';
+export const ENTRA_CLIENT_SECRET =
+  process.env.ENTRA_CLIENT_SECRET || envConfig.ENTRA_CLIENT_SECRET || '';
+export const ENTRA_REDIRECT_URI_PROD =
+  process.env.ENTRA_REDIRECT_URI_PROD || envConfig.ENTRA_REDIRECT_URI_PROD || '';
+export const ENTRA_REDIRECT_URI_DEV =
+  process.env.ENTRA_REDIRECT_URI_DEV || envConfig.ENTRA_REDIRECT_URI_DEV || '';
+export const ENTRA_APP_ROLE_VALUE =
+  process.env.ENTRA_APP_ROLE_VALUE || envConfig.ENTRA_APP_ROLE_VALUE || 'Dashboard.User';
+
+export const SESSION_SECRET =
+  process.env.SESSION_SECRET || envConfig.SESSION_SECRET || '';
+
+// Strict boolean — Express `trust proxy` is gated on `=== true` (see PLAN §13).
+export const TRUST_PROXY =
+  (process.env.TRUST_PROXY || envConfig.TRUST_PROXY || 'false').toLowerCase() === 'true';
+
+// Kill switch: when false, /auth/* routes return 503 + audit row.
+export const OIDC_ENABLED =
+  (process.env.OIDC_ENABLED || envConfig.OIDC_ENABLED || 'true').toLowerCase() !== 'false';
+
+// Kill switch: when false, requireAuth's session-cookie path is skipped (token-only mode).
+export const SESSION_AUTH_ENABLED =
+  (process.env.SESSION_AUTH_ENABLED || envConfig.SESSION_AUTH_ENABLED || 'true').toLowerCase() !== 'false';
+
+export const AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN = parseInt(
+  process.env.AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN ||
+    envConfig.AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN ||
+    '10',
+  10,
+);
+export const AUTH_CALLBACK_RATE_LIMIT_PER_IP_PER_MIN = parseInt(
+  process.env.AUTH_CALLBACK_RATE_LIMIT_PER_IP_PER_MIN ||
+    envConfig.AUTH_CALLBACK_RATE_LIMIT_PER_IP_PER_MIN ||
+    '30',
+  10,
+);
+
+export const ENTRA_DISCOVERY_TIMEOUT_MS = parseInt(
+  process.env.ENTRA_DISCOVERY_TIMEOUT_MS || envConfig.ENTRA_DISCOVERY_TIMEOUT_MS || '5000',
+  10,
+);
+export const ENTRA_JWKS_TIMEOUT_MS = parseInt(
+  process.env.ENTRA_JWKS_TIMEOUT_MS || envConfig.ENTRA_JWKS_TIMEOUT_MS || '5000',
+  10,
+);
+export const ENTRA_TOKEN_EXCHANGE_TIMEOUT_MS = parseInt(
+  process.env.ENTRA_TOKEN_EXCHANGE_TIMEOUT_MS ||
+    envConfig.ENTRA_TOKEN_EXCHANGE_TIMEOUT_MS ||
+    '10000',
+  10,
+);
+
+export const AUDIT_RETENTION_DAYS = parseInt(
+  process.env.AUDIT_RETENTION_DAYS || envConfig.AUDIT_RETENTION_DAYS || '90',
+  10,
+);
+
+// Bounded concurrency on /auth/callback's expensive Microsoft round-trip.
+// 3am-tunable: bump if Microsoft latency causes legitimate-user 503s.
+export const AUTH_CALLBACK_MAX_INFLIGHT = parseInt(
+  process.env.AUTH_CALLBACK_MAX_INFLIGHT || envConfig.AUTH_CALLBACK_MAX_INFLIGHT || '10',
+  10,
+);
 
 // Database encryption key (SQLCipher). Required for encrypted database access.
 export const DB_ENCRYPTION_KEY =

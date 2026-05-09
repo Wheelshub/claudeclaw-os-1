@@ -5,6 +5,13 @@ import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
+
+// OIDC auth routes + middleware live in src/auth/. Single integration
+// point: trustProxyValidator at top of chain, requireAuth as the unified
+// auth gate, registerAuthRoutes(app) for the /auth/* endpoints.
+import { requireAuth, trustProxyValidator } from './auth/middleware.js';
+import { registerAuthRoutes } from './auth/routes.js';
+import { parseAndVerifySignedCookie } from './auth/session.js';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
 import {
@@ -171,6 +178,15 @@ const CLIENT_MSG_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3
 export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
 
+  // (NEW PLAN §12) Trust-proxy validator. Rejects malformed
+  // X-Forwarded-Proto values with 400 + audit so cookie-name selection
+  // can't be steered by garbage. Subset of §13's full strict
+  // trust-proxy work. SAFETY: TRUST_PROXY=true is only safe when the
+  // dashboard is bound to 127.0.0.1 (loopback) AND the trusted
+  // proxy/tunnel terminates on the same host, OR network-level
+  // isolation blocks direct reachability of DASHBOARD_PORT.
+  app.use('*', trustProxyValidator);
+
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
   app.use('*', async (c, next) => {
     c.header('Access-Control-Allow-Origin', '*');
@@ -253,45 +269,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
   }));
 
-  // Token auth middleware.
-  //
-  // Strategy: the v2 SPA does client-side routing across many paths
-  // (/mission, /scheduled, /agents, /agents/:id/files, /chat,
-  // /memories, /hive, /usage, /audit, /settings, /warroom, /). When a
-  // user refreshes any of those URLs the server sees a real GET to
-  // that path. None of those response bodies contain secrets — they're
-  // all the same SPA shell index.html, which reads the token from
-  // window.location at runtime.
-  //
-  // So the rule is simple: GATE THE API. Everything else passes through
-  // the middleware, and the handlers fall through to the SPA-shell
-  // catch-all unless an earlier route matched. Legacy HTML routes that
-  // DO embed the token (warroom?mode=picker|voice, /warroom/text,
-  // / under DASHBOARD_LEGACY=true) call requireToken() inline.
-  app.use('*', async (c, next) => {
-    const path = new URL(c.req.url).pathname;
-    // Only gate the API surface. Static and HTML pass through.
-    if (!path.startsWith('/api/')) {
-      await next();
-      return;
-    }
-    const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    await next();
-  });
-
-  // Inline token check for handlers that USED to rely on the global
-  // middleware but now serve a public SPA shell on the same path. Used
-  // by legacy fallbacks that DO embed the token in the page source.
-  function requireToken(c: any): Response | null {
-    const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
-      return c.json({ error: 'Unauthorized' }, 401) as Response;
-    }
-    return null;
-  }
+  // (NEW PLAN §12) Unified auth gate. Replaces both the old /api/*
+  // token middleware AND the inline requireToken() calls scattered
+  // through this file. Single source of truth: requireAuth checks
+  // whitelist → DASHBOARD_TOKEN (?token query OR Authorization Bearer)
+  // → session cookie (when SESSION_AUTH_ENABLED) → 302/401 deny.
+  // See src/auth/middleware.ts.
+  app.use('*', requireAuth);
 
   // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
   // off, every non-GET request returns 503 — the runbook's promise is
@@ -300,7 +284,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // diagnose. This MUST run before route handlers so the per-route checks
   // I scattered earlier (now removed) can't be the only line of defense.
   const mutationReadonlyExempt = new Set<string>([
-    // Add safe-recovery POST endpoints here if needed; none today.
+    // (PLAN §12) /auth/logout must work even in DASHBOARD_MUTATIONS_ENABLED=false
+    // mode so a session can always be terminated during an incident.
+    '/auth/logout',
   ]);
   app.use('*', async (c, next) => {
     const method = c.req.method;
@@ -372,6 +358,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     await next();
   });
 
+  // (NEW PLAN §12) Mount OIDC auth routes BEFORE app.get('/'). Hono is
+  // order-sensitive — registering after the catch-all `/` would let
+  // /auth/login fall through to the SPA shell. requireAuth's whitelist
+  // also depends on these handlers being registered.
+  registerAuthRoutes(app);
+
   // Serve dashboard HTML.
   // Default: the new Vite-built Mission Control frontend at dist/web/index.html.
   // Fallback: set DASHBOARD_LEGACY=true in .env to revert to the legacy
@@ -382,9 +374,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
     if (legacyMode || !fs.existsSync(newDashboardIndex)) {
-      // Legacy path interpolates DASHBOARD_TOKEN into the HTML, so it
-      // MUST require the token. SPA path doesn't.
-      const denied = requireToken(c); if (denied) return denied;
+      // Legacy path interpolates DASHBOARD_TOKEN into the HTML.
+      // requireAuth (PLAN §12) is the single auth gate; if we're here,
+      // the user is authenticated via either the token or session path.
       return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
     }
     // SPA shell. Read fresh on each request so dev rebuilds appear
@@ -453,14 +445,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/warroom', (c) => {
     const chatId = c.req.query('chatId') || '';
     const mode = c.req.query('mode') || '';
-    // Legacy variants interpolate DASHBOARD_TOKEN into the HTML so they
-    // MUST require a token. The v2 SPA path doesn't.
+    // Legacy variants interpolate DASHBOARD_TOKEN into the HTML.
+    // requireAuth (PLAN §12) gates the route already; both auth modes
+    // (token + session) reach this handler with valid auth state.
     if (mode === 'voice') {
-      const denied = requireToken(c); if (denied) return denied;
       return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
     }
     if (mode === 'picker' || legacyMode || !fs.existsSync(newDashboardIndex)) {
-      const denied = requireToken(c); if (denied) return denied;
       return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
     }
     // v2 SPA shell — no embedded token, safe to serve unauth so a
@@ -486,9 +477,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return '/warroom?' + q.toString();
   }
   app.get('/warroom/text', (c) => {
-    // Legacy HTML embeds DASHBOARD_TOKEN — gate it inline since the
-    // global middleware now only protects /api/*.
-    const denied = requireToken(c); if (denied) return denied;
+    // Legacy HTML embeds DASHBOARD_TOKEN. requireAuth (PLAN §12) is the
+    // single auth gate; both token and session paths land here.
     const chatId = c.req.query('chatId') || '';
     const meetingId = (c.req.query('meetingId') || '').trim();
     const archive = c.req.query('archive') === '1';
@@ -2987,7 +2977,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   if (bindHost !== '127.0.0.1' && bindHost !== 'localhost') {
     logger.warn(
       { bindHost, port: DASHBOARD_PORT },
-      'Dashboard binding to a non-loopback address — every host that can reach this port can hit the dashboard if the token leaks. Confirm DASHBOARD_BIND is intentional.',
+      'Dashboard binding to a non-loopback address — every host that can reach this port can hit the dashboard if the token leaks. With TRUST_PROXY=true, direct requesters can also spoof X-Forwarded-Proto and steer cookie-name selection. Confirm DASHBOARD_BIND is intentional and that direct reachability is firewalled if TRUST_PROXY=true.',
     );
   }
   let server: ReturnType<typeof serve>;
@@ -3035,11 +3025,69 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         if (url.pathname !== '/ws/warroom') return;
 
-        // Enforce the same token gate Hono enforces on every other route.
-        // Without this, anyone who can reach the dashboard port could
-        // proxy into the local Pipecat War Room socket with no auth.
-        const token = url.searchParams.get('token');
-        if (!DASHBOARD_TOKEN || token !== DASHBOARD_TOKEN) {
+        // (NEW PLAN §3.1) Origin allowlist BEFORE auth. CSWSH mitigation.
+        // Hono's CSRF middleware doesn't run on raw upgrade events, so
+        // this is the only place to gate cookie-bearing cross-origin
+        // upgrade attempts.
+        const originHeader = req.headers.origin;
+        if (!originHeader || typeof originHeader !== 'string') {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        let originHost = '';
+        try {
+          originHost = new URL(originHeader).hostname;
+        } catch {
+          // malformed
+        }
+        const wsAllowedOriginHost = (() => {
+          const raw = (DASHBOARD_URL || '').trim();
+          if (!raw) return '';
+          try { return new URL(raw).hostname; } catch { return ''; }
+        })();
+        const wsOriginAllowed =
+          originHost === 'localhost' ||
+          originHost === '127.0.0.1' ||
+          originHost === '[::1]' ||
+          originHost === '0.0.0.0' ||
+          (!!wsAllowedOriginHost && originHost === wsAllowedOriginHost);
+        if (!wsOriginAllowed) {
+          logger.warn({ origin: originHeader, kind: 'ws-upgrade' }, 'WS upgrade rejected: bad origin');
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        // (NEW PLAN §12 §3.1) Auth: try session cookie first, then
+        // ?token= as fallback. Cookie path is wrapped in try/catch so a
+        // malformed cookie can never escape and crash the upgrade.
+        let authed = false;
+        const xfpHeader = req.headers['x-forwarded-proto'];
+        const xfp = Array.isArray(xfpHeader) ? xfpHeader[0] : xfpHeader;
+        const isHttps = xfp === 'https'; // simplistic; full §13 will tighten
+
+        // Cookie path (only if SESSION_AUTH_ENABLED is on at compile-time;
+        // the env constant is captured at module load).
+        try {
+          const cookieHeader = req.headers.cookie;
+          if (cookieHeader) {
+            const session = parseAndVerifySignedCookie(cookieHeader, isHttps);
+            if (session) authed = true;
+          }
+        } catch {
+          // Malformed cookie → fall through to token path.
+        }
+
+        // Token fallback path.
+        if (!authed) {
+          const token = url.searchParams.get('token');
+          if (DASHBOARD_TOKEN && token === DASHBOARD_TOKEN) {
+            authed = true;
+          }
+        }
+
+        if (!authed) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;

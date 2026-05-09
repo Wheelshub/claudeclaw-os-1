@@ -9,3 +9,13 @@ process.env.WARROOM_ENABLED = process.env.WARROOM_ENABLED || 'false';
 // middleware lets it through. Without this, the CSRF check has no
 // allowed-origin host and 403s every cross-origin POST.
 process.env.DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://dash.test.example';
+// SESSION_SECRET is required by src/auth/session.ts to HMAC-sign cookies.
+// Tests set a fixed value so signed cookies are reproducible across runs.
+process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'test-session-secret-do-not-ship';
+// Loose-validated TRUST_PROXY=false so tests don't need to fake X-Forwarded-Proto.
+process.env.TRUST_PROXY = process.env.TRUST_PROXY || 'false';
+// Stage-A defaults: both kill switches on so the OIDC routes are live.
+process.env.OIDC_ENABLED = process.env.OIDC_ENABLED || 'true';
+process.env.SESSION_AUTH_ENABLED = process.env.SESSION_AUTH_ENABLED || 'true';
+// Entra app role for session validation in requireAuth's session path.
+process.env.ENTRA_APP_ROLE_VALUE = process.env.ENTRA_APP_ROLE_VALUE || 'Dashboard.User';

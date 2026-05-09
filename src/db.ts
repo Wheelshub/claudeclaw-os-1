@@ -407,6 +407,63 @@ function createSchema(database: Database.Database): void {
       total_cost  REAL NOT NULL DEFAULT 0,
       created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
+
+    -- PLAN §3 OIDC dashboard auth tables. Mirrored exactly from
+    -- migrations/0.1.0/dashboard_sessions.ts so fresh test/in-memory DBs
+    -- created via createSchema have the tables without needing the
+    -- migration runner. Production prod-DBs upgrade via the migration
+    -- runner (which writes these via the same SQL).
+    CREATE TABLE IF NOT EXISTS dashboard_sessions (
+      id              TEXT PRIMARY KEY,
+      created_at      INTEGER NOT NULL,
+      last_seen_at    INTEGER NOT NULL,
+      expires_at      INTEGER NOT NULL,
+      user_oid        TEXT NOT NULL,
+      user_upn        TEXT NOT NULL,
+      user_name       TEXT,
+      tenant_id       TEXT NOT NULL,
+      roles           TEXT NOT NULL,
+      id_token_hash   TEXT NOT NULL,
+      user_agent      TEXT,
+      ip              TEXT,
+      revoked_at      INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires
+      ON dashboard_sessions(expires_at) WHERE revoked_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_user_oid
+      ON dashboard_sessions(user_oid);
+
+    CREATE TABLE IF NOT EXISTS dashboard_oidc_requests (
+      state           TEXT PRIMARY KEY,
+      created_at      INTEGER NOT NULL,
+      expires_at      INTEGER NOT NULL,
+      pkce_verifier   TEXT NOT NULL,
+      nonce           TEXT NOT NULL,
+      redirect_uri    TEXT NOT NULL,
+      return_to       TEXT NOT NULL,
+      tx_binding_hash TEXT NOT NULL,
+      consumed_at     INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_dashboard_oidc_requests_expires
+      ON dashboard_oidc_requests(expires_at);
+
+    CREATE TABLE IF NOT EXISTS dashboard_audit (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at      INTEGER NOT NULL,
+      event           TEXT NOT NULL,
+      reason          TEXT,
+      user_oid        TEXT,
+      user_upn        TEXT,
+      session_id      TEXT,
+      state           TEXT,
+      ip              TEXT,
+      user_agent      TEXT,
+      details         TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_dashboard_audit_created
+      ON dashboard_audit(created_at);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_audit_event
+      ON dashboard_audit(event, created_at);
   `);
 }
 
@@ -3039,4 +3096,318 @@ export function pruneAgentFileHistory(
      )`,
   ).run(agentId, fileKind, keep);
   return result.changes;
+}
+
+// ── Dashboard OIDC sessions / requests / audit ──────────────────────
+// Tables created by migration 0.1.0 (migrations/0.1.0/dashboard_sessions.ts).
+// Times stored as epoch seconds, matching the rest of this file.
+
+export interface DashboardSession {
+  id: string;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+  userOid: string;
+  userUpn: string;
+  userName: string | null;
+  tenantId: string;
+  roles: string[];
+  idTokenHash: string;
+  userAgent: string | null;
+  ip: string | null;
+  revokedAt: number | null;
+}
+
+export interface CreateDashboardSessionInput {
+  id: string;
+  userOid: string;
+  userUpn: string;
+  userName?: string | null;
+  tenantId: string;
+  roles: string[];
+  idTokenHash: string;
+  userAgent?: string | null;
+  ip?: string | null;
+  lifetimeSeconds: number;
+}
+
+interface DashboardSessionRow {
+  id: string;
+  created_at: number;
+  last_seen_at: number;
+  expires_at: number;
+  user_oid: string;
+  user_upn: string;
+  user_name: string | null;
+  tenant_id: string;
+  roles: string;
+  id_token_hash: string;
+  user_agent: string | null;
+  ip: string | null;
+  revoked_at: number | null;
+}
+
+function mapDashboardSessionRow(row: DashboardSessionRow): DashboardSession {
+  let roles: string[];
+  try {
+    const parsed = JSON.parse(row.roles);
+    roles = Array.isArray(parsed) ? parsed.filter((r): r is string => typeof r === 'string') : [];
+  } catch {
+    roles = [];
+  }
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    expiresAt: row.expires_at,
+    userOid: row.user_oid,
+    userUpn: row.user_upn,
+    userName: row.user_name,
+    tenantId: row.tenant_id,
+    roles,
+    idTokenHash: row.id_token_hash,
+    userAgent: row.user_agent,
+    ip: row.ip,
+    revokedAt: row.revoked_at,
+  };
+}
+
+export function createDashboardSession(input: CreateDashboardSessionInput): DashboardSession {
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + input.lifetimeSeconds;
+  db.prepare(
+    `INSERT INTO dashboard_sessions
+      (id, created_at, last_seen_at, expires_at, user_oid, user_upn, user_name,
+       tenant_id, roles, id_token_hash, user_agent, ip, revoked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+  ).run(
+    input.id,
+    now,
+    now,
+    expiresAt,
+    input.userOid,
+    input.userUpn,
+    input.userName ?? null,
+    input.tenantId,
+    JSON.stringify(input.roles),
+    input.idTokenHash,
+    input.userAgent ?? null,
+    input.ip ?? null,
+  );
+  return {
+    id: input.id,
+    createdAt: now,
+    lastSeenAt: now,
+    expiresAt,
+    userOid: input.userOid,
+    userUpn: input.userUpn,
+    userName: input.userName ?? null,
+    tenantId: input.tenantId,
+    roles: input.roles,
+    idTokenHash: input.idTokenHash,
+    userAgent: input.userAgent ?? null,
+    ip: input.ip ?? null,
+    revokedAt: null,
+  };
+}
+
+// Returns the session only if it is unrevoked AND unexpired.
+export function getDashboardSession(id: string): DashboardSession | undefined {
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare(
+    `SELECT * FROM dashboard_sessions
+     WHERE id = ? AND revoked_at IS NULL AND expires_at > ?`,
+  ).get(id, now) as DashboardSessionRow | undefined;
+  return row ? mapDashboardSessionRow(row) : undefined;
+}
+
+// Bumps last_seen_at only — does NOT extend expires_at (sliding expiry
+// would let a stolen cookie live forever as long as the attacker keeps
+// poking it).
+export function touchDashboardSession(id: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`UPDATE dashboard_sessions SET last_seen_at = ? WHERE id = ?`).run(now, id);
+}
+
+// Returns true when a real revocation happened (id existed AND was not
+// already revoked); false otherwise. Callers can use this to suppress
+// audit rows for stale revocation attempts.
+export function revokeDashboardSession(id: string): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE dashboard_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
+  ).run(now, id);
+  return result.changes > 0;
+}
+
+export function revokeAllDashboardSessionsForUser(userOid: string): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE dashboard_sessions SET revoked_at = ? WHERE user_oid = ? AND revoked_at IS NULL`,
+  ).run(now, userOid);
+  return result.changes;
+}
+
+export interface OidcRequest {
+  state: string;
+  createdAt: number;
+  expiresAt: number;
+  pkceVerifier: string;
+  nonce: string;
+  redirectUri: string;
+  returnTo: string;
+  txBindingHash: string;
+  consumedAt: number | null;
+}
+
+export interface SaveOidcRequestInput {
+  state: string;
+  pkceVerifier: string;
+  nonce: string;
+  redirectUri: string;
+  returnTo: string;
+  txBindingHash: string;
+  lifetimeSeconds: number;
+}
+
+interface OidcRequestRow {
+  state: string;
+  created_at: number;
+  expires_at: number;
+  pkce_verifier: string;
+  nonce: string;
+  redirect_uri: string;
+  return_to: string;
+  tx_binding_hash: string;
+  consumed_at: number | null;
+}
+
+function mapOidcRequestRow(row: OidcRequestRow): OidcRequest {
+  return {
+    state: row.state,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    pkceVerifier: row.pkce_verifier,
+    nonce: row.nonce,
+    redirectUri: row.redirect_uri,
+    returnTo: row.return_to,
+    txBindingHash: row.tx_binding_hash,
+    consumedAt: row.consumed_at,
+  };
+}
+
+export function saveOidcRequest(input: SaveOidcRequestInput): OidcRequest {
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + input.lifetimeSeconds;
+  db.prepare(
+    `INSERT INTO dashboard_oidc_requests
+      (state, created_at, expires_at, pkce_verifier, nonce, redirect_uri,
+       return_to, tx_binding_hash, consumed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+  ).run(
+    input.state,
+    now,
+    expiresAt,
+    input.pkceVerifier,
+    input.nonce,
+    input.redirectUri,
+    input.returnTo,
+    input.txBindingHash,
+  );
+  return {
+    state: input.state,
+    createdAt: now,
+    expiresAt,
+    pkceVerifier: input.pkceVerifier,
+    nonce: input.nonce,
+    redirectUri: input.redirectUri,
+    returnTo: input.returnTo,
+    txBindingHash: input.txBindingHash,
+    consumedAt: null,
+  };
+}
+
+// Atomic single-use lookup. Returns the request only if state matches AND
+// tx_binding_hash matches AND not yet consumed AND not expired. Marks
+// consumed_at in the same transaction so a concurrent caller cannot replay.
+export function consumeOidcRequest(state: string, txBindingHash: string): OidcRequest | undefined {
+  const now = Math.floor(Date.now() / 1000);
+  const tx = db.transaction((): OidcRequest | undefined => {
+    const row = db.prepare(
+      `SELECT * FROM dashboard_oidc_requests
+       WHERE state = ? AND consumed_at IS NULL AND tx_binding_hash = ? AND expires_at > ?`,
+    ).get(state, txBindingHash, now) as OidcRequestRow | undefined;
+    if (!row) return undefined;
+    db.prepare(
+      `UPDATE dashboard_oidc_requests SET consumed_at = ? WHERE state = ?`,
+    ).run(now, state);
+    return mapOidcRequestRow({ ...row, consumed_at: now });
+  });
+  return tx();
+}
+
+// Called at startup AND on every /auth/login for self-cleaning. Drops both
+// expired (never-completed) and consumed rows older than ~1h so the table
+// doesn't grow unbounded under attack traffic.
+export function purgeExpiredOidcRequests(consumedRetentionSeconds = 3600): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `DELETE FROM dashboard_oidc_requests
+     WHERE expires_at <= ?
+        OR (consumed_at IS NOT NULL AND consumed_at <= ?)`,
+  ).run(now, now - consumedRetentionSeconds);
+  return result.changes;
+}
+
+// Used by the periodic sweep. Drops sessions that have either expired or
+// been revoked for more than `revokedRetentionSeconds`.
+export function purgeExpiredSessions(revokedRetentionSeconds = 86400): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `DELETE FROM dashboard_sessions
+     WHERE expires_at <= ?
+        OR (revoked_at IS NOT NULL AND revoked_at <= ?)`,
+  ).run(now, now - revokedRetentionSeconds);
+  return result.changes;
+}
+
+export function purgeOldAuditRows(retentionDays: number): number {
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400;
+  const result = db.prepare(
+    `DELETE FROM dashboard_audit WHERE created_at < ?`,
+  ).run(cutoff);
+  return result.changes;
+}
+
+export interface AuthAuditInput {
+  event: string;
+  reason?: string | null;
+  userOid?: string | null;
+  userUpn?: string | null;
+  sessionId?: string | null;
+  state?: string | null;
+  ip?: string | null;
+  userAgent?: string | null;
+  details?: unknown;
+}
+
+export function appendAuthAudit(input: AuthAuditInput): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `INSERT INTO dashboard_audit
+      (created_at, event, reason, user_oid, user_upn, session_id, state, ip, user_agent, details)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    now,
+    input.event,
+    input.reason ?? null,
+    input.userOid ?? null,
+    input.userUpn ?? null,
+    input.sessionId ?? null,
+    input.state ?? null,
+    input.ip ?? null,
+    input.userAgent ?? null,
+    input.details === undefined ? null : JSON.stringify(input.details),
+  );
+  return result.lastInsertRowid as number;
 }
