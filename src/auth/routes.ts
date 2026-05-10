@@ -470,19 +470,46 @@ async function handleCallback(c: Context): Promise<Response> {
 
     let exchange;
     try {
+      // Cloudflare Tunnel (and any TLS-terminating proxy) gives Hono an
+      // `http://...` URL even when the public request was https. Microsoft
+      // requires the redirect_uri sent at /token to match the one used at
+      // /authorize byte-for-byte (AADSTS500112), so rebuild currentUrl from
+      // the canonical URI we recorded at /authorize. The query string is
+      // preserved from the incoming request so openid-client can extract
+      // ?code= and validate ?state= against expectedState.
+      const incomingUrl = new URL(c.req.url);
+      const canonicalCurrentUrl = new URL(oidcRequest.redirectUri);
+      canonicalCurrentUrl.search = incomingUrl.search;
       exchange = await exchangeCodeForTokens({
         cfg,
-        currentUrl: new URL(c.req.url),
+        currentUrl: canonicalCurrentUrl,
         pkceCodeVerifier: oidcRequest.pkceVerifier,
         expectedState: state,
         expectedNonce: oidcRequest.nonce,
       });
     } catch (err) {
       const reason = err instanceof EntraError ? err.reason : 'token-exchange-timeout';
+      // Capture the full openid-client v6 error context so the audit row is
+      // diagnostic instead of just "server responded with an error in the
+      // response body". AADSTS codes live in error_description.
+      const anyErr = err as any;
+      const details: Record<string, unknown> = {
+        message: err instanceof Error ? err.message : String(err),
+        name: anyErr?.name,
+        code: anyErr?.code,
+        error: anyErr?.error,
+        error_description: anyErr?.error_description,
+        error_uri: anyErr?.error_uri,
+        causeName: anyErr?.cause?.name,
+        causeMessage: anyErr?.cause?.message,
+        causeCode: anyErr?.cause?.code,
+        responseStatus: anyErr?.response?.status,
+        responseUrl: anyErr?.response?.url,
+      };
       appendAuthAuditBestEffort({
         event: 'login.failure',
         reason,
-        details: { message: err instanceof Error ? err.message : String(err) },
+        details,
         state: state.slice(0, 8),
         ip,
         userAgent,
