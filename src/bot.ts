@@ -1658,11 +1658,22 @@ async function processDashboardMessage(
   setProcessing(chatIdStr, true);
 
   try {
-    const sessionId = getSession(chatIdStr, effectiveAgentId);
+    // Sub-agents run in their OWN launchd process (com.claudeclaw.<id>) for
+    // Telegram traffic, with a different cwd, CLAUDE.md, and SDK settings
+    // than the main process this dashboard is hosted in. Anthropic-side
+    // session IDs created over there don't resume cleanly here — the SDK
+    // subprocess exits with code 1. Mirror the orchestrator.delegateToAgent
+    // pattern: every sub-agent turn from the dashboard starts a fresh
+    // Anthropic session. Conversation continuity comes from the memory
+    // context block (retrieval-based recall), not from session resume.
+    const sessionId = isSubAgent ? undefined : getSession(chatIdStr, effectiveAgentId);
 
     const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, effectiveAgentId);
     const dashParts: string[] = [];
-    if (effectiveSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${effectiveSystemPrompt}\n[End agent role]`);
+    // For sub-agents, ALWAYS prepend the system prompt (no session resume,
+    // so the agent role context has to land in the prompt every turn).
+    // For main, only on the first turn (when no session exists yet).
+    if (effectiveSystemPrompt && (isSubAgent || !sessionId)) dashParts.push(`[Agent role — follow these instructions]\n${effectiveSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
 
     const recentDashTasks = getRecentTaskOutputs(effectiveAgentId, 30);
@@ -1711,13 +1722,19 @@ async function processDashboardMessage(
       return;
     }
 
-    if (result.newSessionId) {
+    // Persist the SDK session ID only for the main agent. Sub-agent
+    // dashboard turns intentionally don't reuse sessions (see comment at
+    // the top of this try block), so writing the new ID here would
+    // clobber the Telegram-side session for that agent on the next turn.
+    if (result.newSessionId && !isSubAgent) {
       setSession(chatIdStr, result.newSessionId, effectiveAgentId);
     }
 
     const rawResponse = result.text?.trim() || 'Done.';
 
-    // Save conversation turn
+    // Save conversation turn. Sub-agent runs save against a fresh
+    // session id (the one the SDK assigned this turn) so the
+    // conversation_log row is still grouped per-turn.
     saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, effectiveAgentId);
     if (dashSurfacedIds.length > 0) {
       void evaluateMemoryRelevance(dashSurfacedIds, dashSummaries, text, rawResponse).catch(() => {});
