@@ -1,17 +1,18 @@
 // Auth route + middleware regression tests.
 //
-// Why: PLAN §12 removes the inline `requireToken()` calls from /, /warroom,
-// /warroom/text, /warroom-test-audio handlers and replaces them with the
-// unified requireAuth middleware. These tests assert that:
+// requireAuth is Entra-only — Microsoft sign-in is the single way in.
+// These tests assert that:
 //
-//   1. Each previously-gated branch is still gated (no auth → redirect or 401).
-//   2. Both auth modes (?token= and signed session cookie) reach the handler.
-//   3. The new /auth/* routes behave per spec on the OIDC failure paths.
-//   4. returnTo validator rejects open-redirect attacks.
+//   1. Each gated branch is still gated (no auth → redirect or 401).
+//   2. Valid session cookie reaches the handler.
+//   3. ?token=anything and Authorization: Bearer are NOT honored
+//      (legacy DASHBOARD_TOKEN auth was removed; both should 401/302).
+//   4. The /auth/* routes behave per spec on the OIDC failure paths.
+//   5. returnTo validator rejects open-redirect attacks.
 //
 // Tests use Hono's `app.request()` so no server is booted. The DB is the
-// in-memory fixture from `_initTestDatabase()`. SESSION_SECRET +
-// DASHBOARD_TOKEN are set by `test-env-setup.ts` (vitest setupFiles).
+// in-memory fixture from `_initTestDatabase()`. SESSION_SECRET is set by
+// `test-env-setup.ts` (vitest setupFiles).
 
 import type { Hono } from 'hono';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -20,8 +21,6 @@ import { _initTestDatabase, createDashboardSession } from '../db.js';
 import { buildDashboardApp } from '../dashboard.js';
 import { _resetRateLimitState } from './rate-limit.js';
 import { buildSessionCookieValue } from './session.js';
-
-const TOKEN = process.env.DASHBOARD_TOKEN || 'test-contract-token';
 
 let app: Hono;
 
@@ -97,11 +96,10 @@ describe('requireAuth gates the previously-inline-gated branches', () => {
       expect(res.headers.get('location')).toContain('/login?returnTo=');
     });
 
-    it('?token= → not 401, not redirected to a login page', async () => {
-      const res = await app.request('/?token=' + TOKEN);
-      expect(res.status).not.toBe(401);
-      const loc = res.headers.get('location') || '';
-      expect(loc.includes('/login')).toBe(false);
+    it('?token=anything → 302 to /login (token auth removed)', async () => {
+      const res = await app.request('/?token=any-token-value');
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?returnTo=');
     });
 
     it('valid session cookie → not 401, not redirected to a login page', async () => {
@@ -125,12 +123,11 @@ describe('requireAuth gates the previously-inline-gated branches', () => {
       expect(res.headers.get('location')).toContain('/login?returnTo=');
     });
 
-    it('?token= → not 401, not redirected to a login page', async () => {
+    it('?token=anything → 302 to /login (token auth removed)', async () => {
       const sep = urlPath.includes('?') ? '&' : '?';
-      const res = await app.request(`${urlPath}${sep}token=${TOKEN}`);
-      expect(res.status).not.toBe(401);
-      const loc = res.headers.get('location') || '';
-      expect(loc.includes('/login')).toBe(false);
+      const res = await app.request(`${urlPath}${sep}token=any-token-value`);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?returnTo=');
     });
 
     it('valid session cookie → not 401, not redirected to a login page', async () => {
@@ -161,11 +158,16 @@ describe('requireAuth: API routes', () => {
     expect(res.status).toBe(401);
   });
 
-  it('GET /api/health with Authorization Bearer token → not 401', async () => {
+  it('GET /api/health with Authorization Bearer → 401 (Bearer auth removed)', async () => {
     const res = await app.request('/api/health', {
-      headers: { Authorization: 'Bearer ' + TOKEN },
+      headers: { Authorization: 'Bearer any-token-value' },
     });
-    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /api/health with ?token= → 401 (query token auth removed)', async () => {
+    const res = await app.request('/api/health?token=any-token-value');
+    expect(res.status).toBe(401);
   });
 });
 

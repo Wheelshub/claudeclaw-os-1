@@ -28,7 +28,6 @@ const REQUIRED_KEYS = [
   'ENTRA_APP_ROLE_VALUE',
   'SESSION_SECRET',
   'DASHBOARD_URL',
-  'DASHBOARD_TOKEN',
   // DB_ENCRYPTION_KEY isn't strictly OIDC, but initDatabase() refuses to
   // start without it and the dashboard immediately calls initDatabase().
   // Catch at prestart instead of letting initDatabase throw a stack trace.
@@ -122,12 +121,6 @@ check(
     }
   },
   'must be a parseable URL with http:// or https:// scheme',
-);
-
-checkWarn(
-  'DASHBOARD_TOKEN',
-  (v) => v.length >= 32,
-  'is shorter than 32 chars — recommend at least 32 random chars (low-entropy tokens are guessable)',
 );
 
 // 3. Cross-field consistency: prod redirect URI host should match

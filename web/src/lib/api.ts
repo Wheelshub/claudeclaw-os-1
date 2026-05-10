@@ -1,27 +1,16 @@
-// Token + chatId come from the URL query string (set by the Telegram deep
-// link or by a saved bookmark). We persist both to sessionStorage on first
-// load so subsequent navigations keep working without rewriting the URL.
-// We never use localStorage: dashboardToken is sensitive, and storing it
-// across browser sessions would enlarge its blast radius.
+// Dashboard API client.
 //
-// PLAN §15: behind the `useSessionAuth` flag, the wrapper drops the
-// `?token=` query param and switches to `credentials: 'include'` so the
-// signed session cookie set by /auth/callback authenticates each request.
-// The flag is read from a `<meta name="ccd-use-session-auth">` injected by
-// the dashboard server (`spaShellHtml()` in src/dashboard.ts) — that lets
-// the operator flip between token and cookie auth via env + restart
-// without a SPA rebuild. On any /api/* 401 in session mode, the wrapper
-// hard-redirects to /login?returnTo=<current> so the user lands on the
-// click-through landing page rather than seeing raw JSON errors.
+// Authentication: cookie-only. The dashboard is gated by Entra OIDC; the
+// signed `__Host-ccd_session` cookie (set at /auth/callback) authenticates
+// every request. There is no token-mode anymore — `?token=` was removed
+// in the "Entra-only auth" cleanup so Microsoft sign-in is the only way
+// in.
+//
+// `chatId` is NOT auth — it tells the dashboard which Telegram chat to
+// show context for. We persist it to sessionStorage on first load so
+// subsequent navigations keep working without rewriting the URL.
 
 const url = new URL(window.location.href);
-
-let cachedToken = url.searchParams.get('token') || '';
-if (cachedToken) {
-  try { sessionStorage.setItem('claudeclaw.token', cachedToken); } catch {}
-} else {
-  try { cachedToken = sessionStorage.getItem('claudeclaw.token') || ''; } catch {}
-}
 
 let cachedChatId = url.searchParams.get('chatId') || '';
 if (cachedChatId) {
@@ -30,47 +19,13 @@ if (cachedChatId) {
   try { cachedChatId = sessionStorage.getItem('claudeclaw.chatId') || ''; } catch {}
 }
 
-export const dashboardToken = cachedToken;
 export const chatId = cachedChatId;
 
-function readSessionAuthMeta(): boolean {
-  try {
-    const el = document.querySelector('meta[name="ccd-use-session-auth"]');
-    return el?.getAttribute('content') === 'true';
-  } catch {
-    return false;
-  }
-}
-
-export const useSessionAuth = readSessionAuthMeta();
-
-// Append `?token=` to a path. Token-mode only; never call in session mode.
-function withToken(path: string): string {
-  const sep = path.includes('?') ? '&' : '?';
-  return `${path}${sep}token=${encodeURIComponent(dashboardToken)}`;
-}
-
-// Build the authenticated URL for a same-origin path. Session mode strips
-// `?token=`; token mode preserves the legacy behavior. Used by both the
-// fetch wrappers and inline `<img src=...>` / `fetch()` callers that need
-// to honor the flag without duplicating logic.
-export function authUrl(path: string): string {
-  return useSessionAuth ? path : withToken(path);
-}
-
-// fetch() init for authenticated calls. In session mode we send the
-// signed cookie; in token mode the token is in the URL and credentials
-// are irrelevant (kept omitted to match prior behavior).
-export function authInit(init?: RequestInit): RequestInit {
-  if (!useSessionAuth) return init || {};
-  return { ...(init || {}), credentials: 'include' };
-}
-
-// On 401 in session mode, hard-redirect the page to /login with a
-// returnTo so the user lands back here after authenticating. Token
-// mode keeps the legacy throw-and-let-the-caller-render-error path.
+// On 401, hard-redirect to /login with returnTo so the user lands back
+// here after authenticating. Same-origin cookie sends automatically on
+// fetch (default credentials='same-origin'), so we never need 'include'
+// for our own API.
 function handle401Redirect(): void {
-  if (!useSessionAuth) return;
   const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
   window.location.href = `/login?returnTo=${returnTo}`;
 }
@@ -82,11 +37,9 @@ export class ApiError extends Error {
 }
 
 async function apiFetch(path: string, init: RequestInit): Promise<Response> {
-  const res = await fetch(authUrl(path), authInit(init));
-  if (res.status === 401 && useSessionAuth) {
+  const res = await fetch(path, init);
+  if (res.status === 401) {
     handle401Redirect();
-    // Throw so callers don't try to parse a redirect-target body as JSON
-    // while the navigation kicks in.
     throw new ApiError(401, {}, `${init.method || 'GET'} ${path} unauthorized`);
   }
   return res;
@@ -149,11 +102,11 @@ export async function apiDelete<T = unknown>(path: string): Promise<T> {
   return res.json();
 }
 
-// SSE URL builder. EventSource doesn't accept credentials options the
-// same way fetch does, but same-origin SSE includes cookies by default,
-// so dropping `?token=` is enough to switch to session auth.
+// SSE URL builder. EventSource on same-origin URLs sends cookies on the
+// handshake, so the URL is just the path. Kept as a function so callers
+// don't need to know the auth model.
 export function tokenizedSseUrl(path: string): string {
-  return authUrl(path);
+  return path;
 }
 
 // Vite dev runs on :5173 and proxies /api/* and /warroom/text to the
@@ -164,13 +117,4 @@ const BACKEND_ORIGIN = (import.meta as any).env?.DEV ? 'http://localhost:3141' :
 
 export function legacyUrl(path: string): string {
   return BACKEND_ORIGIN + path;
-}
-
-// Legacy /warroom* URLs accept `?token=...` for token-mode auth. In
-// session mode the same-origin signed cookie authenticates these
-// top-level navigations (SameSite=Lax sends cookies on GET nav). Use
-// like `&token=${legacyTokenSuffix()}` is wrong — this returns the
-// FULL `&token=...` segment or empty so callers don't have to branch.
-export function legacyTokenParam(): string {
-  return useSessionAuth ? '' : `&token=${encodeURIComponent(dashboardToken)}`;
 }

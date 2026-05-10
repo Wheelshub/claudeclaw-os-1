@@ -12,7 +12,7 @@ import path from 'path';
 import { requireAuth, trustProxyValidator } from './auth/middleware.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { parseAndVerifySignedCookie } from './auth/session.js';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -115,7 +115,7 @@ import {
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT, USE_SESSION_AUTH } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
@@ -272,8 +272,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // (NEW PLAN §12) Unified auth gate. Replaces both the old /api/*
   // token middleware AND the inline requireToken() calls scattered
   // through this file. Single source of truth: requireAuth checks
-  // whitelist → DASHBOARD_TOKEN (?token query OR Authorization Bearer)
-  // → session cookie (when SESSION_AUTH_ENABLED) → 302/401 deny.
+  // whitelist → Entra session cookie → 302/401 deny.
   // See src/auth/middleware.ts.
   app.use('*', requireAuth);
 
@@ -372,30 +371,21 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const legacyMode = (process.env.DASHBOARD_LEGACY || '').toLowerCase() === 'true';
   const newDashboardIndex = path.join(PROJECT_ROOT, 'dist', 'web', 'index.html');
 
-  // PLAN §15: inject `<meta name="ccd-use-session-auth">` into the SPA shell
-  // so the frontend can switch its fetch wrapper between token and cookie
-  // auth without a separate runtime config endpoint. Read at request time so
-  // flipping USE_SESSION_AUTH in env + restart is sufficient.
   function spaShellHtml(): string {
-    const html = fs.readFileSync(newDashboardIndex, 'utf-8');
-    const meta = `<meta name="ccd-use-session-auth" content="${USE_SESSION_AUTH ? 'true' : 'false'}" />`;
-    if (html.includes('name="ccd-use-session-auth"')) return html;
-    return html.replace('</head>', `    ${meta}\n  </head>`);
+    return fs.readFileSync(newDashboardIndex, 'utf-8');
   }
 
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
     if (legacyMode || !fs.existsSync(newDashboardIndex)) {
-      // Legacy path interpolates DASHBOARD_TOKEN into the HTML.
-      // requireAuth (PLAN §12) is the single auth gate; if we're here,
-      // the user is authenticated via either the token or session path.
-      return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
+      // Legacy server-rendered shell. Inline JS uses same-origin fetch
+      // so the Entra session cookie authenticates every API call —
+      // there is no token interpolation anymore.
+      return c.html(getDashboardHtml(chatId, WARROOM_ENABLED));
     }
     // SPA shell. Read fresh on each request so dev rebuilds appear
-    // without restart. The frontend reads ?token= and ?chatId= from
-    // window.location, falling back to sessionStorage. Serving this
-    // unauthenticated means a token-stripped URL still loads the app
-    // instead of showing raw 401 JSON.
+    // without restart. requireAuth has already gated us here, so the
+    // shell is served only to authenticated sessions.
     return c.html(spaShellHtml());
   });
 
@@ -456,17 +446,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/warroom', (c) => {
     const chatId = c.req.query('chatId') || '';
     const mode = c.req.query('mode') || '';
-    // Legacy variants interpolate DASHBOARD_TOKEN into the HTML.
-    // requireAuth (PLAN §12) gates the route already; both auth modes
-    // (token + session) reach this handler with valid auth state.
+    // Legacy variants render server-side HTML whose inline JS uses
+    // same-origin fetch — the Entra session cookie authenticates
+    // every API call. requireAuth has already gated this route.
     if (mode === 'voice') {
-      return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
+      return c.html(getWarRoomHtml(chatId, WARROOM_PORT));
     }
     if (mode === 'picker' || legacyMode || !fs.existsSync(newDashboardIndex)) {
-      return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
+      return c.html(getWarRoomPickerHtml(chatId));
     }
-    // v2 SPA shell — no embedded token, safe to serve unauth so a
-    // hard-refresh of a token-stripped URL still loads the app.
+    // v2 SPA shell.
     return c.html(spaShellHtml());
   });
 
@@ -483,13 +472,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   //                                   picker)
   //   - meeting open                → serve interactive war room
   function pickerRedirect(chatId: string) {
-    const q = new URLSearchParams({ token: DASHBOARD_TOKEN });
+    const q = new URLSearchParams();
     if (chatId) q.set('chatId', chatId);
-    return '/warroom?' + q.toString();
+    const qs = q.toString();
+    return '/warroom' + (qs ? '?' + qs : '');
   }
   app.get('/warroom/text', (c) => {
-    // Legacy HTML embeds DASHBOARD_TOKEN. requireAuth (PLAN §12) is the
-    // single auth gate; both token and session paths land here.
     const chatId = c.req.query('chatId') || '';
     const meetingId = (c.req.query('meetingId') || '').trim();
     const archive = c.req.query('archive') === '1';
@@ -510,7 +498,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (existing.chat_id !== '' && existing.chat_id !== chatId) {
       return c.redirect(pickerRedirect(chatId));
     }
-    return c.html(getWarRoomTextHtml(DASHBOARD_TOKEN, chatId, meetingId));
+    return c.html(getWarRoomTextHtml(chatId, meetingId));
   });
 
   // Serve War Room background music (user's custom music.mp3 first, then bundled entrance.mp3)
@@ -2972,11 +2960,6 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
  * wire up the WebSocket proxy for the voice War Room.
  */
 export function startDashboard(botApi?: Api<RawApi>): void {
-  if (!DASHBOARD_TOKEN) {
-    logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
-    return;
-  }
-
   const app = buildDashboardApp(botApi);
 
   // Default to loopback. Anyone on the same LAN is otherwise one
@@ -3077,8 +3060,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         const xfp = Array.isArray(xfpHeader) ? xfpHeader[0] : xfpHeader;
         const isHttps = xfp === 'https'; // simplistic; full §13 will tighten
 
-        // Cookie path (only if SESSION_AUTH_ENABLED is on at compile-time;
-        // the env constant is captured at module load).
+        // Entra session cookie is the only way in.
         try {
           const cookieHeader = req.headers.cookie;
           if (cookieHeader) {
@@ -3086,15 +3068,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
             if (session) authed = true;
           }
         } catch {
-          // Malformed cookie → fall through to token path.
-        }
-
-        // Token fallback path.
-        if (!authed) {
-          const token = url.searchParams.get('token');
-          if (DASHBOARD_TOKEN && token === DASHBOARD_TOKEN) {
-            authed = true;
-          }
+          // Malformed cookie → treat as unauthenticated.
         }
 
         if (!authed) {

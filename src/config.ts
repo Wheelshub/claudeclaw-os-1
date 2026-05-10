@@ -14,7 +14,6 @@ const envConfig = readEnvFile([
   'SLACK_USER_TOKEN',
   'CONTEXT_LIMIT',
   'DASHBOARD_PORT',
-  'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
@@ -46,8 +45,6 @@ const envConfig = readEnvFile([
   'SESSION_SECRET',
   'TRUST_PROXY',
   'OIDC_ENABLED',
-  'SESSION_AUTH_ENABLED',
-  'USE_SESSION_AUTH',
   'AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN',
   'AUTH_CALLBACK_RATE_LIMIT_PER_IP_PER_MIN',
   'ENTRA_DISCOVERY_TIMEOUT_MS',
@@ -182,8 +179,6 @@ export const DASHBOARD_PORT = parseInt(
   process.env.DASHBOARD_PORT || envConfig.DASHBOARD_PORT || '3141',
   10,
 );
-export const DASHBOARD_TOKEN =
-  process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
 
@@ -214,18 +209,6 @@ export const TRUST_PROXY =
 // Kill switch: when false, /auth/* routes return 503 + audit row.
 export const OIDC_ENABLED =
   (process.env.OIDC_ENABLED || envConfig.OIDC_ENABLED || 'true').toLowerCase() !== 'false';
-
-// Kill switch: when false, requireAuth's session-cookie path is skipped (token-only mode).
-export const SESSION_AUTH_ENABLED =
-  (process.env.SESSION_AUTH_ENABLED || envConfig.SESSION_AUTH_ENABLED || 'true').toLowerCase() !== 'false';
-
-// SPA-side flag (PLAN §15 / §16): when true the Vite frontend uses cookie auth
-// (`credentials: 'include'`) instead of `?token=`. Independent from
-// SESSION_AUTH_ENABLED so an operator can keep OIDC infra live while the SPA
-// stays on tokens during Stage A. Injected into the SPA shell via
-// `<meta name="ccd-use-session-auth">`. Default false until Stage B.
-export const USE_SESSION_AUTH =
-  (process.env.USE_SESSION_AUTH || envConfig.USE_SESSION_AUTH || 'false').toLowerCase() === 'true';
 
 export const AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN = parseInt(
   process.env.AUTH_LOGIN_RATE_LIMIT_PER_IP_PER_MIN ||

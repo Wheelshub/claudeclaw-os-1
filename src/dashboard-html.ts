@@ -1,4 +1,4 @@
-export function getDashboardHtml(token: string, chatId: string, warroomEnabled = false): string {
+export function getDashboardHtml(chatId: string, warroomEnabled = false): string {
 const WARROOM_ENABLED = warroomEnabled;
   return `<!DOCTYPE html>
 <html lang="en">
@@ -211,7 +211,7 @@ const WARROOM_ENABLED = warroomEnabled;
 </div>
 
 <!-- War Room Quick Access (only shown when WARROOM_ENABLED) -->
-${WARROOM_ENABLED ? `<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1e3a5f;background:linear-gradient(135deg,#0f172a 0%,#1a1a1a 100%)" onclick="window.location.href='/warroom?token=${token}&chatId=${chatId}'">
+${WARROOM_ENABLED ? `<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1e3a5f;background:linear-gradient(135deg,#0f172a 0%,#1a1a1a 100%)" onclick="window.location.href='/warroom?chatId=${chatId}'">
   <div>
     <div style="font-size:14px;font-weight:600;color:#60a5fa">War Room</div>
     <div style="font-size:12px;color:#6b7280;margin-top:2px">Voice standup with your agent team</div>
@@ -624,7 +624,6 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
 </div>
 
 <script>
-const TOKEN = ${JSON.stringify(token)};
 const CHAT_ID = ${JSON.stringify(chatId)};
 const BASE = location.origin;
 
@@ -780,8 +779,7 @@ function closeDrawer() {
 }
 
 function api(path) {
-  const sep = path.includes('?') ? '&' : '?';
-  return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
+  return fetch(BASE + path).then(r => r.json());
 }
 
 let salienceChart, memTimelineChart, costChart;
@@ -827,9 +825,9 @@ function elapsed(ts) {
 async function taskAction(id, action) {
   try {
     if (action === 'delete') {
-      await fetch(BASE + '/api/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+      await fetch(BASE + '/api/tasks/' + id + '', { method: 'DELETE' });
     } else {
-      await fetch(BASE + '/api/tasks/' + id + '/' + action + '?token=' + TOKEN, { method: 'POST' });
+      await fetch(BASE + '/api/tasks/' + id + '/' + action + '', { method: 'POST' });
     }
     await loadTasks();
   } catch(e) { console.error('Task action failed:', e); }
@@ -1014,7 +1012,7 @@ function escapeHtml(s) {
 
 async function loadInfo() {
   try {
-    const r = await fetch(BASE + '/api/info?token=' + TOKEN + '&chatId=' + CHAT_ID);
+    const r = await fetch(BASE + '/api/info?chatId=' + CHAT_ID);
     const d = await r.json();
     const el = document.getElementById('bot-info');
     const parts = [];
@@ -1129,7 +1127,7 @@ async function saveVoices(applyAfter) {
   statusEl.style.color = '#6b7280';
   statusEl.textContent = 'Saving...';
   try {
-    const res = await fetch(BASE + '/api/warroom/voices?token=' + TOKEN, {
+    const res = await fetch(BASE + '/api/warroom/voices', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ updates: updates }),
@@ -1155,7 +1153,7 @@ async function applyVoices() {
   const saveOk = await saveVoices(true);
   if (saveOk === false) return;
   try {
-    const res = await fetch(BASE + '/api/warroom/voices/apply?token=' + TOKEN, { method: 'POST' });
+    const res = await fetch(BASE + '/api/warroom/voices/apply', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'apply failed');
     statusEl.style.color = '#10b981';
@@ -1276,7 +1274,7 @@ async function sendAgentToMeet() {
     : 'Joining as ' + agent + '...';
 
   try {
-    const res = await fetch(BASE + '/api/meet/join?token=' + TOKEN, {
+    const res = await fetch(BASE + '/api/meet/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent: agent, meet_url: meetUrl, auto_brief: autoBrief }),
@@ -1329,7 +1327,7 @@ async function createDailyRoom() {
   roomBox.style.display = 'none';
 
   try {
-    const res = await fetch(BASE + '/api/meet/join-daily?token=' + TOKEN, {
+    const res = await fetch(BASE + '/api/meet/join-daily', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent: agent, mode: mode, auto_brief: autoBrief }),
@@ -1374,7 +1372,7 @@ async function leaveMeetSession(sessionId) {
   const row = document.querySelector('[data-meet-session="' + sessionId + '"]');
   if (row) row.style.opacity = '0.5';
   try {
-    const res = await fetch(BASE + '/api/meet/leave?token=' + TOKEN, {
+    const res = await fetch(BASE + '/api/meet/leave', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId }),
@@ -1509,8 +1507,8 @@ async function loadAgents() {
       // photos, or bundled fallback art from a single resolver. The
       // onerror fallback removes the <img> if even the resolver 204s
       // (no bundled art either) so we don't show a broken image icon.
-      const avatarV = a.avatar_etag ? ('&v=' + encodeURIComponent(a.avatar_etag)) : '';
-      const avatarUrl = '/api/agents/' + encodeURIComponent(a.id) + '/avatar?token=' + encodeURIComponent(TOKEN) + avatarV;
+      const avatarV = a.avatar_etag ? ('?v=' + encodeURIComponent(a.avatar_etag)) : '';
+      const avatarUrl = '/api/agents/' + encodeURIComponent(a.id) + '/avatar' + avatarV;
       const avatarImg = '<img src="' + avatarUrl + '" alt="" ' +
         'style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid ' + color + ';flex-shrink:0;background:#0a0a0a" ' +
         'onerror="this.remove()">';
@@ -1543,7 +1541,7 @@ async function pickModel(optEl) {
   var agentId = picker.dataset.agent;
   picker.querySelector('.model-menu').style.display = 'none';
   try {
-    await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
+    await fetch(BASE + '/api/agents/' + agentId + '/model', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
@@ -1556,7 +1554,7 @@ async function pickGlobalModel(optEl) {
   var model = optEl.dataset.model;
   optEl.closest('.model-menu').style.display = 'none';
   try {
-    await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
+    await fetch(BASE + '/api/agents/model', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
@@ -1660,7 +1658,7 @@ async function agentModalAction(agentId, action) {
     if (!confirm('Delete agent "' + agentId + '"? This removes all config, the service, and the bot token from .env.')) return;
     status.innerHTML = '<span style="color:#fbbf24">Deleting...</span>';
     try {
-      var res = await fetch(BASE + '/api/agents/' + agentId + '/full?token=' + TOKEN, { method: 'DELETE' });
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/full', { method: 'DELETE' });
       var data = await res.json();
       if (data.ok) {
         status.innerHTML = '<span style="color:#6ee7b7">Deleted</span>';
@@ -1675,7 +1673,7 @@ async function agentModalAction(agentId, action) {
   if (action === 'stop') {
     status.innerHTML = '<span style="color:#fbbf24">Stopping...</span>';
     try {
-      await fetch(BASE + '/api/agents/' + agentId + '/deactivate?token=' + TOKEN, { method: 'POST' });
+      await fetch(BASE + '/api/agents/' + agentId + '/deactivate', { method: 'POST' });
       status.innerHTML = '<span style="color:#6ee7b7">Stopped</span>';
       setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
     } catch(e) { status.innerHTML = '<span style="color:#f87171">Failed</span>'; }
@@ -1685,7 +1683,7 @@ async function agentModalAction(agentId, action) {
   if (action === 'start') {
     status.innerHTML = '<span style="color:#fbbf24">Starting...</span>';
     try {
-      var res = await fetch(BASE + '/api/agents/' + agentId + '/activate?token=' + TOKEN, { method: 'POST' });
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/activate', { method: 'POST' });
       var data = await res.json();
       if (data.ok) {
         status.innerHTML = '<span style="color:#6ee7b7">Started' + (data.pid ? ' (PID ' + data.pid + ')' : '') + '</span>';
@@ -1699,7 +1697,7 @@ async function agentModalAction(agentId, action) {
   if (action === 'restart') {
     status.innerHTML = '<span style="color:#fbbf24">Restarting...</span>';
     try {
-      var res = await fetch(BASE + '/api/agents/' + agentId + '/restart?token=' + TOKEN, { method: 'POST' });
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/restart', { method: 'POST' });
       var data = await res.json();
       if (data.ok) {
         status.innerHTML = '<span style="color:#6ee7b7">Restarted</span>';
@@ -1882,7 +1880,7 @@ function cawTokenChanged() {
 
   cawTokenDebounce = setTimeout(async function() {
     try {
-      var data = await fetch(BASE + '/api/agents/validate-token?token=' + TOKEN, {
+      var data = await fetch(BASE + '/api/agents/validate-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: token }),
@@ -1916,7 +1914,7 @@ async function cawCreate() {
   errEl.style.display = 'none';
 
   try {
-    var res = await fetch(BASE + '/api/agents/create?token=' + TOKEN, {
+    var res = await fetch(BASE + '/api/agents/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1974,7 +1972,7 @@ async function cawActivate() {
   status.innerHTML = '<span style="color:#fbbf24">Installing service and starting agent...</span>';
 
   try {
-    var res = await fetch(BASE + '/api/agents/' + cawCreatedId + '/activate?token=' + TOKEN, { method: 'POST' });
+    var res = await fetch(BASE + '/api/agents/' + cawCreatedId + '/activate', { method: 'POST' });
     var data = await res.json();
     if (data.ok) {
       btn.textContent = 'Running';
@@ -2231,9 +2229,9 @@ function renderMissionCard(t) {
 async function missionAction(id, action) {
   try {
     if (action === 'cancel') {
-      await fetch(BASE + '/api/mission/tasks/' + id + '/cancel?token=' + TOKEN, { method: 'POST' });
+      await fetch(BASE + '/api/mission/tasks/' + id + '/cancel', { method: 'POST' });
     } else if (action === 'delete') {
-      await fetch(BASE + '/api/mission/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+      await fetch(BASE + '/api/mission/tasks/' + id + '', { method: 'DELETE' });
     }
     await loadMissionControl();
   } catch(e) { console.error('Mission action failed:', e); }
@@ -2286,7 +2284,7 @@ async function missionDrop(e) {
   if (!missionDragId || !col) return;
   var newAgent = col.dataset.dropAgent;
   try {
-    await fetch(BASE + '/api/mission/tasks/' + missionDragId + '?token=' + TOKEN, {
+    await fetch(BASE + '/api/mission/tasks/' + missionDragId + '', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assigned_agent: newAgent }),
@@ -2298,7 +2296,7 @@ async function missionDrop(e) {
 
 async function autoAssignOne(id) {
   try {
-    const res = await fetch(BASE + '/api/mission/tasks/' + id + '/auto-assign?token=' + TOKEN, { method: 'POST' });
+    const res = await fetch(BASE + '/api/mission/tasks/' + id + '/auto-assign', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
       await loadMissionControl();
@@ -2313,7 +2311,7 @@ async function autoAssignAll() {
   btn.textContent = 'Assigning...';
   btn.disabled = true;
   try {
-    const res = await fetch(BASE + '/api/mission/tasks/auto-assign-all?token=' + TOKEN, { method: 'POST' });
+    const res = await fetch(BASE + '/api/mission/tasks/auto-assign-all', { method: 'POST' });
     const data = await res.json();
     await loadMissionControl();
   } catch(e) { console.error('Auto-assign all error:', e); }
@@ -2356,7 +2354,7 @@ async function createMissionTask() {
   if (!prompt) { errEl.textContent = 'Prompt is required'; errEl.style.display = ''; return; }
 
   try {
-    const res = await fetch(BASE + '/api/mission/tasks?token=' + TOKEN, {
+    const res = await fetch(BASE + '/api/mission/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: title, prompt: prompt, priority: priority }),
@@ -2581,7 +2579,7 @@ async function loadChatHistory() {
 
 function connectChatSSE() {
   if (chatSSE) { chatSSE.close(); chatSSE = null; }
-  const url = BASE + '/api/chat/stream?token=' + TOKEN;
+  const url = BASE + '/api/chat/stream';
   chatSSE = new EventSource(url);
 
   chatSSE.addEventListener('user_message', function(e) {
@@ -2768,7 +2766,7 @@ async function sendChatMessage() {
   // Disable send while processing
   document.getElementById('chat-send-btn').disabled = true;
   try {
-    await fetch(BASE + '/api/chat/send?token=' + TOKEN, {
+    await fetch(BASE + '/api/chat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
@@ -2788,7 +2786,7 @@ function autoResizeInput() {
 
 async function abortProcessing() {
   try {
-    await fetch(BASE + '/api/chat/abort?token=' + TOKEN, { method: 'POST' });
+    await fetch(BASE + '/api/chat/abort', { method: 'POST' });
   } catch(e) { console.error('Abort error', e); }
 }
 </script>

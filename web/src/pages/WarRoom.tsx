@@ -8,7 +8,7 @@ import { Pill } from '@/components/Pill';
 import { VoicesPane } from '@/pages/Voices';
 import { StandupConfigPane } from '@/pages/StandupConfig';
 import { useFetch } from '@/lib/useFetch';
-import { apiPost, chatId, legacyUrl, legacyTokenParam } from '@/lib/api';
+import { apiPost, chatId, legacyUrl } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
 // 'voices' is the embedded voice configuration tab — used to be its own
@@ -86,7 +86,7 @@ export function WarRoom() {
                 icon={<ExternalLink size={22} />}
                 title="Open in classic"
                 description="Voice and text War Room pages from the legacy dashboard, served by the same backend."
-                href={legacyUrl(`/warroom?mode=picker&chatId=${encodeURIComponent(chatId)}${legacyTokenParam()}`)}
+                href={legacyUrl(`/warroom?mode=picker&chatId=${encodeURIComponent(chatId)}`)}
               />
             </div>
           </div>
@@ -234,7 +234,7 @@ function VoicePane() {
       <section>
         <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Open the voice room</div>
         <a
-          href={legacyUrl(`/warroom?mode=voice&chatId=${encodeURIComponent(chatId)}${legacyTokenParam()}`)}
+          href={legacyUrl(`/warroom?mode=voice&chatId=${encodeURIComponent(chatId)}`)}
           target="_blank"
           rel="noreferrer"
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
@@ -299,7 +299,7 @@ function TextPane() {
     try {
       const res = await apiPost<{ ok: boolean; meetingId: string }>('/api/warroom/text/new', { chatId });
       // Open in same window — text war room is served by legacy backend at /warroom/text.
-      window.location.href = legacyUrl(`/warroom/text?meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}${legacyTokenParam()}`);
+      window.location.href = legacyUrl(`/warroom/text?meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}`);
     } catch (err: any) {
       alert('New meeting failed: ' + (err?.message || err));
     } finally { setCreating(false); }
@@ -328,7 +328,7 @@ function TextPane() {
           {list.map((m) => (
             <a
               key={m.id}
-              href={legacyUrl(`/warroom/text?meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}${legacyTokenParam()}`)}
+              href={legacyUrl(`/warroom/text?meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}`)}
               class="block bg-[var(--color-card)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] rounded-lg p-3 transition-colors"
             >
               <div class="flex items-center gap-2 mb-1">

@@ -7,10 +7,8 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-export function getWarRoomHtml(token: string, chatId: string, warroomPort: number): string {
-  const safeToken = escapeHtml(token);
+export function getWarRoomHtml(chatId: string, warroomPort: number): string {
   const safeChatId = escapeHtml(chatId);
-  const jsToken = JSON.stringify(token);
   const jsChatId = JSON.stringify(chatId);
   return `<!DOCTYPE html>
 <html lang="en">
@@ -704,23 +702,23 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
     <div class="table-surface"></div>
     <div class="table-rim"></div>
     <div class="stage-avatar" data-agent="main" style="--seat-x:0px;--seat-y:-150px">
-      <img src="/api/agents/main/avatar?token=${safeToken}" alt="Main">
+      <img src="/api/agents/main/avatar" alt="Main">
       <div class="stage-nameplate">MAIN</div>
     </div>
     <div class="stage-avatar" data-agent="research" style="--seat-x:-250px;--seat-y:-40px">
-      <img src="/api/agents/research/avatar?token=${safeToken}" alt="Research">
+      <img src="/api/agents/research/avatar" alt="Research">
       <div class="stage-nameplate">RESEARCH</div>
     </div>
     <div class="stage-avatar" data-agent="comms" style="--seat-x:250px;--seat-y:-40px">
-      <img src="/api/agents/comms/avatar?token=${safeToken}" alt="Comms">
+      <img src="/api/agents/comms/avatar" alt="Comms">
       <div class="stage-nameplate">COMMS</div>
     </div>
     <div class="stage-avatar" data-agent="content" style="--seat-x:-165px;--seat-y:135px">
-      <img src="/api/agents/content/avatar?token=${safeToken}" alt="Content">
+      <img src="/api/agents/content/avatar" alt="Content">
       <div class="stage-nameplate">CONTENT</div>
     </div>
     <div class="stage-avatar" data-agent="ops" style="--seat-x:165px;--seat-y:135px">
-      <img src="/api/agents/ops/avatar?token=${safeToken}" alt="Ops">
+      <img src="/api/agents/ops/avatar" alt="Ops">
       <div class="stage-nameplate">OPS</div>
     </div>
   </div>
@@ -728,16 +726,16 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
 
 <!-- Background music -->
 <audio id="bgMusic" loop preload="auto">
-  <source src="/warroom-music?token=${safeToken}" type="audio/mpeg">
+  <source src="/warroom-music" type="audio/mpeg">
 </audio>
 
 <!-- Pipecat client SDK (bundled) -->
-<script src="/warroom-client.js?token=${safeToken}&v=${Date.now()}"></script>
+<script src="/warroom-client.js?v=${Date.now()}"></script>
 
 <!-- Main app (hidden during intro) -->
 <div class="app" id="app">
   <div class="header">
-    <a href="/?token=${safeToken}&chatId=${safeChatId}" class="back-link">&larr; Mission Control</a>
+    <a href="/?chatId=${safeChatId}" class="back-link">&larr; Mission Control</a>
     <h1>War Room</h1>
     <div class="cost-display" id="costDisplay">$0.000</div>
   </div>
@@ -799,17 +797,16 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
 </div>
 
 <script>
-const TOKEN = ${jsToken};
 const CHAT_ID = ${jsChatId};
 const WARROOM_PORT = ${warroomPort};
 const API_BASE = window.location.origin;
 
-// The dashboard /ws/warroom proxy enforces the same DASHBOARD_TOKEN gate
-// Hono uses for HTTP routes. The WS upgrade path can't read Authorization
-// headers cleanly across browsers, so we pass the token as a query param.
+// The dashboard /ws/warroom proxy authenticates via the same Entra
+// session cookie as HTTP routes. Same-origin WebSocket upgrades carry
+// cookies in the request, so no auth needs to be in the URL.
 function buildWsUrl() {
   return (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
-    + window.location.host + '/ws/warroom?token=' + encodeURIComponent(TOKEN);
+    + window.location.host + '/ws/warroom';
 }
 
 let meetingActive = false;
@@ -948,7 +945,7 @@ async function uploadMusic(input) {
   var form = new FormData();
   form.append('file', file);
   try {
-    var res = await fetch('/warroom-music-upload?token=' + TOKEN, { method: 'POST', body: form });
+    var res = await fetch('/warroom-music-upload', { method: 'POST', body: form });
     if (res.ok) {
       var status = document.getElementById('musicStatus');
       if (status) { status.style.display = 'inline'; setTimeout(function(){ status.style.display = 'none'; }, 3000); }
@@ -980,7 +977,7 @@ async function setMode(mode, el) {
   }
 
   try {
-    var resp = await fetch(API_BASE + '/api/warroom/pin?token=' + TOKEN, {
+    var resp = await fetch(API_BASE + '/api/warroom/pin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: mode }),
@@ -1041,7 +1038,7 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
       await new Promise(function(r){ setTimeout(r, 500); });
       waited += 500;
       try {
-        var probe = await fetch(API_BASE + '/api/warroom/start?token=' + TOKEN, {
+        var probe = await fetch(API_BASE + '/api/warroom/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chatId: CHAT_ID, mode: currentMode }),
@@ -1203,7 +1200,7 @@ function addTranscriptEntry(speaker, text, agentId) {
   // Persist to database (fire-and-forget)
   transcriptEntryCount++;
   if (currentMeetingId && speaker !== 'system') {
-    fetch(API_BASE + '/api/warroom/meeting/transcript?token=' + TOKEN, {
+    fetch(API_BASE + '/api/warroom/meeting/transcript', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ meetingId: currentMeetingId, speaker: speaker === 'You' ? 'user' : (agentId || speaker), text: text }),
@@ -1370,8 +1367,8 @@ async function togglePin(agentId) {
     //    is active. When no meeting is active, just update the pin file
     //    and the server picks it up on the next Start Meeting click.
     var endpoint = targetAgent
-      ? { url: '/api/warroom/pin?token=' + TOKEN, body: JSON.stringify({ agent: targetAgent, restart: meetingActive }) }
-      : { url: '/api/warroom/unpin?token=' + TOKEN, body: null };
+      ? { url: '/api/warroom/pin', body: JSON.stringify({ agent: targetAgent, restart: meetingActive }) }
+      : { url: '/api/warroom/unpin', body: null };
     var headers = targetAgent ? { 'Content-Type': 'application/json' } : undefined;
     var resp = await fetch(API_BASE + endpoint.url, { method: 'POST', headers: headers, body: endpoint.body });
     var data = await resp.json();
@@ -1419,7 +1416,7 @@ async function togglePin(agentId) {
       await new Promise(function(r){ setTimeout(r, 500); });
       waited += 500;
       try {
-        var probe = await fetch(API_BASE + '/api/warroom/start?token=' + TOKEN, {
+        var probe = await fetch(API_BASE + '/api/warroom/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chatId: CHAT_ID, mode: currentMode }),
@@ -1527,7 +1524,7 @@ function escapeHtmlClient(s) {
 // initial-pin loader can chain off it and call _renderPin AFTER cards
 // exist in the DOM.
 function loadAgentCards() {
-  return fetch(API_BASE + '/api/warroom/agents?token=' + TOKEN)
+  return fetch(API_BASE + '/api/warroom/agents')
     .then(function(r){ return r.json(); })
     .then(function(data) {
       if (!data || !data.agents) return;
@@ -1546,8 +1543,8 @@ function loadAgentCards() {
         card.id = 'agent-' + agent.id;
         card.setAttribute('data-agent', agent.id);
         card.onclick = function(){ togglePin(agent.id); };
-        var avatarV = agent.avatar_etag ? ('&v=' + encodeURIComponent(agent.avatar_etag)) : '';
-        card.innerHTML = '<div class="agent-avatar"><img src="/api/agents/' + encodeURIComponent(agent.id) + '/avatar?token=' + encodeURIComponent(TOKEN) + avatarV + '" alt="' + safeName + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.style.display=\\'none\\'"></div>'
+        var avatarV = agent.avatar_etag ? ('?v=' + encodeURIComponent(agent.avatar_etag)) : '';
+        card.innerHTML = '<div class="agent-avatar"><img src="/api/agents/' + encodeURIComponent(agent.id) + '/avatar' + avatarV + '" alt="' + safeName + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.style.display=\\'none\\'"></div>'
           + '<div class="agent-info"><div class="agent-name">' + safeName + '</div><div class="agent-role">' + safeRole + '</div></div>'
           + '<div class="agent-indicator" id="status-' + safeAgentIdAttr + '"></div>';
         // Fade in
@@ -1563,7 +1560,7 @@ function loadAgentCards() {
 // to mark. When these ran in parallel, a slow agents API + fast pin API
 // left the pinned agent visually unmarked until the user clicked something.
 loadAgentCards().then(function() {
-  return fetch(API_BASE + '/api/warroom/pin?token=' + TOKEN);
+  return fetch(API_BASE + '/api/warroom/pin');
 }).then(function(r){ return r && r.json(); }).then(function(j) {
   if (!j) return;
   if (j.agent) {
@@ -1720,7 +1717,7 @@ async function toggleMeeting() {
 
     try {
       // Get the WebSocket URL from our API (may take ~8s if agent was just switched)
-      var resp = await fetch(API_BASE + '/api/warroom/start?token=' + TOKEN, {
+      var resp = await fetch(API_BASE + '/api/warroom/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId: CHAT_ID, mode: currentMode })
@@ -1753,7 +1750,7 @@ async function toggleMeeting() {
         meetingStartTime = Date.now();
         transcriptEntryCount = 0;
         // Create meeting record in DB
-        fetch(API_BASE + '/api/warroom/meeting/start?token=' + TOKEN, {
+        fetch(API_BASE + '/api/warroom/meeting/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mode: currentMode, agent: pinnedAgent || 'main' }),
@@ -1993,7 +1990,7 @@ async function toggleMeeting() {
     meetingActive = false;
     // Persist meeting end to DB
     if (currentMeetingId) {
-      fetch(API_BASE + '/api/warroom/meeting/end?token=' + TOKEN, {
+      fetch(API_BASE + '/api/warroom/meeting/end', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: currentMeetingId, entryCount: transcriptEntryCount }),

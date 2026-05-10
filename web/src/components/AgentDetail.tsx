@@ -6,7 +6,7 @@ import { Pill, StatusDot } from '@/components/Pill';
 import { Tab } from '@/components/PageHeader';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime, formatCost } from '@/lib/format';
-import { chatId, authUrl, authInit } from '@/lib/api';
+import { chatId } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { showCosts } from '@/lib/theme';
 
@@ -76,8 +76,8 @@ function Header({ agent }: { agent: Agent }) {
       const form = new FormData();
       form.append('image', file);
       const res = await fetch(
-        authUrl(`/api/agents/${encodeURIComponent(agent.id)}/avatar`),
-        authInit({ method: 'PUT', body: form }),
+        `/api/agents/${encodeURIComponent(agent.id)}/avatar`,
+        { method: 'PUT', body: form },
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -103,8 +103,8 @@ function Header({ agent }: { agent: Agent }) {
     setBusy(true);
     try {
       const res = await fetch(
-        authUrl(`/api/agents/${encodeURIComponent(agent.id)}/avatar`),
-        authInit({ method: 'DELETE' }),
+        `/api/agents/${encodeURIComponent(agent.id)}/avatar`,
+        { method: 'DELETE' },
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

@@ -17,10 +17,8 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export function getWarRoomPickerHtml(token: string, chatId: string): string {
-  const safeToken = escapeHtml(token);
+export function getWarRoomPickerHtml(chatId: string): string {
   const safeChatId = escapeHtml(chatId);
-  const jsToken = JSON.stringify(token);
   const jsChatId = JSON.stringify(chatId);
   return `<!DOCTYPE html>
 <html lang="en">
@@ -280,14 +278,13 @@ export function getWarRoomPickerHtml(token: string, chatId: string): string {
     <div class="history-empty" id="history-empty">Loading…</div>
     <div class="history-list" id="history-list" hidden></div>
   </div>
-  <a class="back" href="/?token=${safeToken}${safeChatId ? `&chatId=${safeChatId}` : ''}">← Back to Mission Control</a>
+  <a class="back" href="/${safeChatId ? `?chatId=${safeChatId}` : ''}">← Back to Mission Control</a>
 </div>
 <script>
-const TOKEN = ${jsToken};
 const CHAT_ID = ${jsChatId};
 
 document.getElementById('tile-voice').addEventListener('click', () => {
-  const q = new URLSearchParams({ token: TOKEN, mode: 'voice' });
+  const q = new URLSearchParams({ mode: 'voice' });
   if (CHAT_ID) q.set('chatId', CHAT_ID);
   window.location.href = '/warroom?' + q.toString();
 });
@@ -298,14 +295,14 @@ document.getElementById('tile-text').addEventListener('click', async () => {
   textError.textContent = '';
   textCta.textContent = 'Creating meeting…';
   try {
-    const res = await fetch('/api/warroom/text/new?token=' + encodeURIComponent(TOKEN), {
+    const res = await fetch('/api/warroom/text/new', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId: CHAT_ID || '' }),
     });
     const data = await res.json();
     if (!res.ok || !data.meetingId) throw new Error(data.error || 'create_failed');
-    const q = new URLSearchParams({ token: TOKEN, meetingId: data.meetingId });
+    const q = new URLSearchParams({ meetingId:data.meetingId });
     if (CHAT_ID) q.set('chatId', CHAT_ID);
     window.location.href = '/warroom/text?' + q.toString();
   } catch (err) {
@@ -334,7 +331,7 @@ async function loadHistory() {
   try {
     // Scope by current chat. Server filters when chatId is present;
     // legacy meetings (chat_id='') only appear when CHAT_ID is also ''.
-    const res = await fetch('/api/warroom/text/list?token=' + encodeURIComponent(TOKEN) + '&limit=15&chatId=' + encodeURIComponent(CHAT_ID || ''));
+    const res = await fetch('/api/warroom/text/list?limit=15&chatId=' + encodeURIComponent(CHAT_ID || ''));
     const data = await res.json();
     if (!res.ok || !Array.isArray(data.meetings)) throw new Error(data.error || 'load_failed');
     if (data.meetings.length === 0) {
@@ -357,7 +354,7 @@ async function loadHistory() {
         '<span class="preview">' + escHtml(preview) + '</span>' +
         '<span class="meta">' + (m.entry_count || 0) + ' msg · ' + fmtRelative(m.started_at) + '</span>';
       btn.addEventListener('click', () => {
-        const q = new URLSearchParams({ token: TOKEN, meetingId: m.id });
+        const q = new URLSearchParams({ meetingId:m.id });
         if (CHAT_ID) q.set('chatId', CHAT_ID);
         // Ended meetings need archive=1 so the server doesn't redirect
         // them straight back to this picker (refresh-becomes-fresh

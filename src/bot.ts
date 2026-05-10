@@ -10,7 +10,6 @@ import {
   ALLOWED_CHAT_ID,
   CONTEXT_LIMIT,
   DASHBOARD_PORT,
-  DASHBOARD_TOKEN,
   DASHBOARD_URL,
   MAX_MESSAGE_LENGTH,
   activeBotToken,
@@ -1186,16 +1185,15 @@ export function createBot(): Bot {
     }
   });
 
-  // /dashboard — send a clickable link to the web dashboard
+  // /dashboard — send a clickable link to the web dashboard. The link
+  // does NOT carry a token; clicking it sends the user through Microsoft
+  // Entra OIDC sign-in, after which the session cookie authenticates
+  // every request.
   bot.command('dashboard', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
-    if (!DASHBOARD_TOKEN) {
-      await ctx.reply('Dashboard not configured. Set DASHBOARD_TOKEN in .env and restart.');
-      return;
-    }
     const chatIdStr = ctx.chat!.id.toString();
     const base = DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
-    const url = `${base}/?token=${DASHBOARD_TOKEN}&chatId=${chatIdStr}`;
+    const url = `${base}/?chatId=${chatIdStr}`;
 
     const { InlineKeyboard } = await import('grammy');
     const keyboard = new InlineKeyboard().url('Open Dashboard', url);

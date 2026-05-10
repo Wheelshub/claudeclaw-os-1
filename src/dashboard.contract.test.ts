@@ -14,14 +14,33 @@
 // land BEFORE config.ts evaluates at import time.
 
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import { _initTestDatabase } from './db.js';
+import { _initTestDatabase, createDashboardSession } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
+import { buildSessionCookieValue } from './auth/session.js';
 import type { Hono } from 'hono';
 
-const TOKEN = 'test-contract-token';
-const Q = '?token=' + TOKEN;
-
 let app: Hono;
+let sessionCookie: string;
+
+// Build a fresh session cookie per test so the cookie's session row exists
+// in the in-memory test DB. requireAuth verifies the cookie's session ID
+// against the DB before letting the request through.
+function forgeValidSessionCookie(): string {
+  const id = 'test-session-' + Math.random().toString(36).slice(2, 18);
+  createDashboardSession({
+    id,
+    userOid: 'test-oid-00000000',
+    userUpn: 'test@example.com',
+    userName: 'Test User',
+    tenantId: 'test-tenant',
+    roles: ['Dashboard.User'],
+    idTokenHash: 'test-hash',
+    userAgent: 'vitest',
+    ip: '127.0.0.1',
+    lifetimeSeconds: 3600,
+  });
+  return 'ccd_session=' + buildSessionCookieValue(id);
+}
 
 beforeAll(() => {
   app = buildDashboardApp(undefined) as unknown as Hono;
@@ -29,14 +48,26 @@ beforeAll(() => {
 
 beforeEach(() => {
   _initTestDatabase();
+  sessionCookie = forgeValidSessionCookie();
 });
 
 async function get(path: string) {
-  return app.request(path + (path.includes('?') ? '&' : '?') + 'token=' + TOKEN);
+  return app.request(path, { headers: { Cookie: sessionCookie } });
 }
 
 async function getNoToken(path: string) {
   return app.request(path);
+}
+
+// Q is preserved as the empty-query no-op so existing call sites that
+// concatenate it don't need to change. Path stays clean.
+const Q = '';
+
+// Wrap RequestInit so every authenticated app.request gets the session
+// cookie. Use as: `app.request(path, auth({ method: 'POST', body }))`.
+function auth(init?: RequestInit): RequestInit {
+  const headers = { ...(init?.headers as Record<string, string> | undefined), Cookie: sessionCookie };
+  return { ...(init ?? {}), headers };
 }
 
 // Tests fetch JSON we only describe shape-wise — typing as `any` keeps the
@@ -46,23 +77,30 @@ async function jsonOf(res: Response): Promise<any> {
 }
 
 describe('auth gate', () => {
-  it('rejects unauthorized GET without token', async () => {
+  it('rejects unauthorized GET without session cookie', async () => {
     const res = await getNoToken('/api/health');
     expect(res.status).toBe(401);
     expect(await jsonOf(res)).toMatchObject({ error: 'Unauthorized' });
   });
 
-  it('rejects unauthorized GET with wrong token', async () => {
-    const res = await app.request('/api/health?token=wrong');
+  it('rejects ?token= since DASHBOARD_TOKEN auth was removed', async () => {
+    const res = await app.request('/api/health?token=any-value');
     expect(res.status).toBe(401);
   });
 
-  it('accepts GET with correct token', async () => {
+  it('rejects Authorization: Bearer since Bearer auth was removed', async () => {
+    const res = await app.request('/api/health', {
+      headers: { Authorization: 'Bearer any-token-value' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts GET with valid session cookie', async () => {
     const res = await get('/api/health');
     expect(res.status).toBe(200);
   });
 
-  it('responds 204 to OPTIONS preflight without token check', async () => {
+  it('responds 204 to OPTIONS preflight without auth check', async () => {
     const res = await app.request('/api/health', { method: 'OPTIONS' });
     expect(res.status).toBe(204);
   });
@@ -105,22 +143,21 @@ describe('auth gate', () => {
     });
   }
 
-  // Legacy mode HTML embeds DASHBOARD_TOKEN, so those variants MUST stay
-  // gated. PLAN §12 unified the gate to requireAuth — non-API paths now
-  // 302 to /login (the landing page added in §14.5) rather than 401 JSON.
-  it('blocks legacy /warroom?mode=picker without a token (HTML embeds token)', async () => {
+  // Entra-only auth: every non-whitelisted path must 302 to /login
+  // (the landing page) when there's no valid session cookie.
+  it('blocks legacy /warroom?mode=picker without a session', async () => {
     const res = await app.request('/warroom?mode=picker');
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('/login?returnTo=');
   });
 
-  it('blocks legacy /warroom?mode=voice without a token (HTML embeds token)', async () => {
+  it('blocks legacy /warroom?mode=voice without a session', async () => {
     const res = await app.request('/warroom?mode=voice');
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('/login?returnTo=');
   });
 
-  it('blocks legacy /warroom/text without a token (HTML embeds token)', async () => {
+  it('blocks legacy /warroom/text without a session', async () => {
     const res = await app.request('/warroom/text?meetingId=wr_test');
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('/login?returnTo=');
@@ -134,22 +171,22 @@ describe('auth gate', () => {
   // src/test-env-setup.ts sets DASHBOARD_URL=https://dash.test.example
   // so this test exercises the right code path.
   it('allows POSTs with Origin matching DASHBOARD_URL', async () => {
-    const res = await app.request('/api/mission/tasks?token=' + TOKEN, {
+    const res = await app.request('/api/mission/tasks', auth({
       method: 'POST',
       headers: { 'origin': 'https://dash.test.example', 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'csrf test', prompt: 'csrf test' }),
-    });
+    }));
     // 200 (created) or 400 (validation) — anything but 403 means the
     // CSRF middleware let it through, which is what we're testing.
     expect(res.status).not.toBe(403);
   });
 
   it('blocks POSTs from disallowed origin', async () => {
-    const res = await app.request('/api/mission/tasks?token=' + TOKEN, {
+    const res = await app.request('/api/mission/tasks', auth({
       method: 'POST',
       headers: { 'origin': 'https://evil.example.com', 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'csrf test', prompt: 'csrf test' }),
-    });
+    }));
     expect(res.status).toBe(403);
   });
 });
@@ -262,29 +299,29 @@ describe('GET /api/mission/history', () => {
 
 describe('POST /api/mission/tasks', () => {
   it('rejects missing title with 400', async () => {
-    const res = await app.request('/api/mission/tasks' + Q, {
+    const res = await app.request('/api/mission/tasks', auth({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ prompt: 'test prompt' }),
-    });
+    }));
     expect(res.status).toBe(400);
   });
 
   it('rejects missing prompt with 400', async () => {
-    const res = await app.request('/api/mission/tasks' + Q, {
+    const res = await app.request('/api/mission/tasks', auth({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'test' }),
-    });
+    }));
     expect(res.status).toBe(400);
   });
 
   it('creates task with valid input and returns full task shape', async () => {
-    const res = await app.request('/api/mission/tasks' + Q, {
+    const res = await app.request('/api/mission/tasks', auth({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'contract test', prompt: 'do nothing', priority: 3 }),
-    });
+    }));
     expect(res.status).toBe(201);
     const body = await jsonOf(res);
     expect(body.task).toMatchObject({
@@ -303,9 +340,9 @@ describe('GET /api/mission/tasks/auto-assign-all route ordering', () => {
   // Regression test: this endpoint was shadowed by /:id/auto-assign for
   // months because route registration order was wrong. Lock it in.
   it('returns 200, not 404, when called as a static path', async () => {
-    const res = await app.request('/api/mission/tasks/auto-assign-all' + Q, {
+    const res = await app.request('/api/mission/tasks/auto-assign-all', auth({
       method: 'POST',
-    });
+    }));
     // Must NOT be 404. May be 200 (assigned: 0) or 400 if no agents.
     expect(res.status).not.toBe(404);
   });
@@ -418,29 +455,29 @@ describe('GET /api/chat/history', () => {
 
 describe('PATCH /api/agents/:id/model', () => {
   it('rejects missing model with 400', async () => {
-    const res = await app.request('/api/agents/main/model' + Q, {
+    const res = await app.request('/api/agents/main/model', auth({
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
-    });
+    }));
     expect(res.status).toBe(400);
   });
 
   it('rejects invalid model with 400', async () => {
-    const res = await app.request('/api/agents/main/model' + Q, {
+    const res = await app.request('/api/agents/main/model', auth({
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'gpt-5' }),
-    });
+    }));
     expect(res.status).toBe(400);
   });
 
   it('main response includes restartRequired: false', async () => {
-    const res = await app.request('/api/agents/main/model' + Q, {
+    const res = await app.request('/api/agents/main/model', auth({
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-4-6' }),
-    });
+    }));
     expect(res.status).toBe(200);
     const body = await jsonOf(res);
     expect(body).toMatchObject({
@@ -461,26 +498,26 @@ describe('avatar endpoints share error shape and status semantics', () => {
   ]);
 
   it('GET, PUT, DELETE all return JSON {error} on an invalid id', async () => {
-    const get = await app.request('/api/agents/has%20space/avatar' + Q);
+    const get = await app.request('/api/agents/has%20space/avatar', auth());
     expect(get.status).toBe(400);
     const getBody = await jsonOf(get);
     expect(getBody).toMatchObject({ error: expect.any(String) });
 
-    const put = await app.request('/api/agents/has%20space/avatar' + Q, {
+    const put = await app.request('/api/agents/has%20space/avatar', auth({
       method: 'PUT',
       headers: { 'content-type': 'application/octet-stream' },
       body: PNG_HEADER,
-    });
+    }));
     expect(put.status).toBe(400);
     expect(await jsonOf(put)).toMatchObject({ error: expect.any(String) });
 
-    const del = await app.request('/api/agents/has%20space/avatar' + Q, { method: 'DELETE' });
+    const del = await app.request('/api/agents/has%20space/avatar', auth({ method: 'DELETE' }));
     expect(del.status).toBe(400);
     expect(await jsonOf(del)).toMatchObject({ error: expect.any(String) });
   });
 
   it('GET on an unknown agent returns 404 (not 204)', async () => {
-    const res = await app.request('/api/agents/totally_made_up_agent/avatar' + Q);
+    const res = await app.request('/api/agents/totally_made_up_agent/avatar', auth());
     expect(res.status).toBe(404);
     expect(await jsonOf(res)).toMatchObject({ error: 'agent not found' });
   });
@@ -488,7 +525,7 @@ describe('avatar endpoints share error shape and status semantics', () => {
   it('GET on main with no avatar resolved returns 204', async () => {
     // main always "exists" per agentExists; with no bundled or mutable
     // avatar in the test env, the resolver returns null → 204.
-    const res = await app.request('/api/agents/main/avatar' + Q);
+    const res = await app.request('/api/agents/main/avatar', auth());
     expect([200, 204]).toContain(res.status);
     if (res.status === 204) {
       expect(res.headers.get('content-type') ?? '').not.toMatch(/text\/html/);
@@ -498,11 +535,11 @@ describe('avatar endpoints share error shape and status semantics', () => {
 
 describe('PATCH /api/dashboard/settings standup_config', () => {
   async function patchStandupConfig(value: string) {
-    return app.request('/api/dashboard/settings' + Q, {
+    return app.request('/api/dashboard/settings', auth({
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ key: 'standup_config', value }),
-    });
+    }));
   }
 
   it('accepts a well-formed payload', async () => {

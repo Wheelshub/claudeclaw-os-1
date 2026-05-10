@@ -5,16 +5,15 @@
 //  1. `trustProxyValidator` — runs at the very top of the chain.
 //     Rejects malformed `X-Forwarded-Proto` values with 400 + audit so
 //     cookie-name selection (`__Host-` vs not) doesn't depend on a
-//     spoofable header value. Subset of PLAN §13's full strict
-//     trust-proxy work; the rest lands in §13.
+//     spoofable header value.
 //
-//  2. `requireAuth` — replaces the old `/api/*` token-check middleware
-//     AND the inline `requireToken()` calls scattered through the
-//     dashboard. Single auth gate. Whitelist for the routes that must
-//     stay public, then token path, then session path, then deny.
+//  2. `requireAuth` — single auth gate for the entire dashboard.
+//     Whitelist (login surface + Teams webhook + favicon + static
+//     assets) → Entra session cookie → 302/401 deny. There is no
+//     token path: Microsoft sign-in via OIDC is the only way in.
 //
-// Operator constraint (PLAN §2.4): `TRUST_PROXY=true` is only safe when
-// the dashboard is bound to 127.0.0.1 AND the trusted proxy/tunnel
+// Operator constraint: `TRUST_PROXY=true` is only safe when the
+// dashboard is bound to 127.0.0.1 AND the trusted proxy/tunnel
 // terminates on the same host, OR network-level isolation blocks
 // direct reachability of `DASHBOARD_PORT`. Otherwise an attacker can
 // spoof `X-Forwarded-Proto` on a direct connection and influence
@@ -22,9 +21,7 @@
 import type { Context, MiddlewareHandler } from 'hono';
 
 import {
-  DASHBOARD_TOKEN,
   ENTRA_APP_ROLE_VALUE,
-  SESSION_AUTH_ENABLED,
   TRUST_PROXY,
 } from '../config.js';
 
@@ -35,11 +32,10 @@ import {
 } from './session.js';
 
 // Hono's context variables are typed via this module-augmented map.
-// Downstream handlers can read c.get('authMode') / c.get('user') with
-// proper typing instead of casting.
+// Downstream handlers can read c.get('user') with proper typing instead
+// of casting.
 declare module 'hono' {
   interface ContextVariableMap {
-    authMode: 'token' | 'session';
     user: { oid: string; upn: string; name: string | null; sessionId: string };
   }
 }
@@ -111,55 +107,36 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
     return;
   }
 
-  // 2. Token path: ?token query OR Authorization: Bearer (same-origin / CLI
-  //    only until §7 expands CORS allowed-headers).
-  const queryToken = c.req.query('token');
-  const authHeader = c.req.header('authorization') || '';
-  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const bearerToken = bearerMatch ? bearerMatch[1] : '';
-  const presentedToken = queryToken || bearerToken;
-  if (DASHBOARD_TOKEN && presentedToken && presentedToken === DASHBOARD_TOKEN) {
-    c.set('authMode', 'token');
+  // 2. Entra session cookie. Cookie scheme is selected via the validated
+  //    effective scheme (trustProxyValidator already rejected malformed
+  //    X-Forwarded-Proto headers).
+  const scheme = getEffectiveScheme(c);
+  const isHttps = scheme === 'https';
+
+  let session;
+  try {
+    session = parseAndVerifySignedCookie(c.req.header('cookie'), isHttps);
+  } catch {
+    // Malformed cookie. Treat as anonymous and fall through to denial —
+    // never let a parser exception escape the middleware.
+    session = undefined;
+  }
+  if (session && session.roles.includes(ENTRA_APP_ROLE_VALUE)) {
+    touchSessionThrottled(session);
+    c.set('user', {
+      oid: session.userOid,
+      upn: session.userUpn,
+      name: session.userName,
+      sessionId: session.id,
+    });
     await next();
     return;
   }
 
-  // 3. Session path. Cookie scheme is selected via the validated effective
-  //    scheme (trustProxyValidator already rejected malformed headers).
-  const scheme = getEffectiveScheme(c);
-  const isHttps = scheme === 'https';
-
-  if (SESSION_AUTH_ENABLED) {
-    let session;
-    try {
-      session = parseAndVerifySignedCookie(c.req.header('cookie'), isHttps);
-    } catch {
-      // Malformed cookie. Treat as anonymous and fall through to denial —
-      // never let a parser exception escape the middleware.
-      session = undefined;
-    }
-    if (session && session.roles.includes(ENTRA_APP_ROLE_VALUE)) {
-      touchSessionThrottled(session);
-      c.set('authMode', 'session');
-      c.set('user', {
-        oid: session.userOid,
-        upn: session.userUpn,
-        name: session.userName,
-        sessionId: session.id,
-      });
-      await next();
-      return;
-    }
-  }
-
-  // 4. Denial. /api/ → 401 JSON; everything else → 302 to /login (the
+  // 3. Denial. /api/ → 401 JSON; everything else → 302 to /login (the
   // landing page with a "Sign in with Microsoft" button). Browser users
-  // get a clickable surface before being redirected to Microsoft; API
-  // clients get a clean machine-readable 401.
+  // get a clickable surface; API clients get machine-readable 401.
   if (path.startsWith('/api/')) {
-    // Match the legacy middleware's casing exactly so existing contract
-    // tests (and any frontend code that string-matches on the body) keep
-    // working after the gate swap.
     return c.json({ error: 'Unauthorized' }, 401);
   }
   const returnTo = encodeURIComponent(path + (url.search || ''));

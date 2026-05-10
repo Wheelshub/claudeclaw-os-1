@@ -19,11 +19,9 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export function getWarRoomTextHtml(token: string, chatId: string, meetingId: string): string {
-  const safeToken = escapeHtml(token);
+export function getWarRoomTextHtml(chatId: string, meetingId: string): string {
   const safeChatId = escapeHtml(chatId);
   const safeMeetingId = escapeHtml(meetingId);
-  const jsToken = JSON.stringify(token);
   const jsChatId = JSON.stringify(chatId);
   const jsMeetingId = JSON.stringify(meetingId);
   return `<!DOCTYPE html>
@@ -993,7 +991,7 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
 <div class="app">
   <header class="header" role="banner">
     <div class="left">
-      <a class="back" href="/?token=${safeToken}${safeChatId ? `&chatId=${safeChatId}` : ''}" aria-label="Back to Mission Control" title="Back to Mission Control">←</a>
+      <a class="back" href="/${safeChatId ? `?chatId=${safeChatId}` : ''}" aria-label="Back to Mission Control" title="Back to Mission Control">←</a>
       <div class="brand">
         <div class="brand-title">War Room</div>
         <div class="brand-sub">Text mode</div>
@@ -1073,7 +1071,6 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
 
 <script>
 'use strict';
-const TOKEN = ${jsToken};
 const CHAT_ID = ${jsChatId};
 const MEETING_ID = ${jsMeetingId};
 const API = window.location.origin;
@@ -1081,7 +1078,7 @@ const API = window.location.origin;
 // matches the meeting's chat_id (strict-validate guard). Server treats
 // the param as authoritative — a stale meetingId from another chat is
 // rejected with 403 rather than silently scoping under the wrong chat.
-const Q = '?token=' + encodeURIComponent(TOKEN) + (CHAT_ID ? '&chatId=' + encodeURIComponent(CHAT_ID) : '');
+const Q = (CHAT_ID ? '?chatId=' + encodeURIComponent(CHAT_ID) : '');
 const MEETING_Q = Q + '&meetingId=' + encodeURIComponent(MEETING_ID);
 
 // Single avatar URL builder. Hits the same tokenized /api endpoint
@@ -2346,7 +2343,7 @@ async function loadEarlier() {
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
   try {
     const params = new URLSearchParams({
-      token: TOKEN, meetingId: MEETING_ID, limit: '200',
+      meetingId: MEETING_ID, limit: '200',
       beforeTs: String(oldestTs), beforeId: String(oldestId),
     });
     const res = await fetch(API + '/api/warroom/text/history?' + params.toString());
@@ -2930,9 +2927,10 @@ async function endMeeting() {
   document.getElementById('composer').disabled = true;
   document.getElementById('btn-send').disabled = true;
   setTimeout(() => {
-    const q = new URLSearchParams({ token: TOKEN });
+    const q = new URLSearchParams();
     if (CHAT_ID) q.set('chatId', CHAT_ID);
-    window.location.href = '/warroom?' + q.toString();
+    const qs = q.toString();
+    window.location.href = '/warroom' + (qs ? '?' + qs : '');
   }, 1500);
 }
 
@@ -2998,7 +2996,7 @@ document.getElementById('btn-end').addEventListener('click', () => {
   openDialog('End this meeting?', 'You can reopen it within 24h and resume from where you left off.', 'End meeting', endMeeting);
 });
 document.getElementById('btn-switch-voice').addEventListener('click', () => {
-  const q = new URLSearchParams({ token: TOKEN, mode: 'voice' });
+  const q = new URLSearchParams({ mode: 'voice' });
   if (CHAT_ID) q.set('chatId', CHAT_ID);
   window.location.href = '/warroom?' + q.toString();
 });

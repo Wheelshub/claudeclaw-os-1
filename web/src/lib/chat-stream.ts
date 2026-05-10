@@ -1,5 +1,5 @@
 import { signal, effect } from '@preact/signals';
-import { tokenizedSseUrl, dashboardToken, useSessionAuth } from './api';
+import { tokenizedSseUrl } from './api';
 
 // Global chat SSE state — opened once when the app mounts so the unread
 // badge keeps tracking even when /chat isn't the active page.
@@ -21,9 +21,7 @@ export function resetUnread() { chatUnread.value = 0; }
 
 let started = false;
 export function startChatStream() {
-  // Token mode requires a token to authenticate the SSE; session mode
-  // relies on the same-origin cookie set by /auth/callback.
-  if (started || (!dashboardToken && !useSessionAuth)) return;
+  if (started) return;
   started = true;
 
   let es: EventSource | null = null;
