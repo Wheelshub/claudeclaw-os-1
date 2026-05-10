@@ -40,6 +40,7 @@ import { buildCostFooter } from './cost-footer.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
+import { agentExists, loadAgentConfig, resolveAgentClaudeMd } from './agent-config.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import {
   isLocked,
@@ -1592,39 +1593,79 @@ export function createBot(): Bot {
  * Process a message sent from the dashboard web UI.
  * Runs the agent pipeline and relays the response to Telegram.
  * Response is delivered via SSE (fire-and-forget from the caller's perspective).
+ *
+ * `targetAgentId` selects which agent runs the turn. Undefined / 'main' /
+ * 'all' keeps the existing main-agent path including Telegram relay. A
+ * specific sub-agent id loads that agent's config + system prompt and
+ * SKIPS the Telegram relay (the user is in the dashboard chat tab, not
+ * on Telegram).
  */
 export async function processMessageFromDashboard(
   botApi: Api<RawApi>,
   text: string,
+  targetAgentId?: string,
 ): Promise<void> {
   if (!ALLOWED_CHAT_ID) return;
 
   const chatIdStr = ALLOWED_CHAT_ID;
 
-  logger.info({ messageLen: text.length, source: 'dashboard' }, 'Processing dashboard message');
+  logger.info({ messageLen: text.length, source: 'dashboard', targetAgent: targetAgentId ?? 'main' }, 'Processing dashboard message');
 
   // Route through the message queue so dashboard messages wait for any
   // in-flight Telegram message or scheduled task to finish first.
-  messageQueue.enqueue(chatIdStr, () => processDashboardMessage(botApi, text, chatIdStr));
+  messageQueue.enqueue(chatIdStr, () => processDashboardMessage(botApi, text, chatIdStr, targetAgentId));
 }
 
 async function processDashboardMessage(
   botApi: Api<RawApi>,
   text: string,
   chatIdStr: string,
+  targetAgentId?: string,
 ): Promise<void> {
-  emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'dashboard' });
+  // Resolve effective agent. Sub-agent routing kicks in only for an
+  // explicit, non-main, non-all id. Main agent path keeps existing
+  // behavior including Telegram relay; sub-agents skip relay.
+  const isSubAgent = targetAgentId !== undefined && targetAgentId !== 'main' && targetAgentId !== 'all';
+  const effectiveAgentId = isSubAgent ? targetAgentId! : AGENT_ID;
+
+  // Pick system prompt + model + MCP allowlist from the resolved agent.
+  // Falls back to the main-agent config (loaded at process start) when
+  // running for the main agent.
+  let effectiveSystemPrompt: string | undefined = agentSystemPrompt;
+  let effectiveModel: string | undefined = agentDefaultModel;
+  let effectiveMcpAllowlist: string[] | undefined = agentMcpAllowlist;
+
+  if (isSubAgent) {
+    try {
+      const agentConfig = loadAgentConfig(effectiveAgentId);
+      effectiveModel = agentConfig.model;
+      effectiveMcpAllowlist = agentConfig.mcpServers;
+      const claudeMdPath = resolveAgentClaudeMd(effectiveAgentId);
+      effectiveSystemPrompt = undefined;
+      if (claudeMdPath) {
+        try {
+          effectiveSystemPrompt = fs.readFileSync(claudeMdPath, 'utf-8');
+        } catch {
+          // No CLAUDE.md readable for this agent — proceed without one.
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, agent: effectiveAgentId }, 'Failed to load sub-agent config; falling back to main-agent defaults');
+    }
+  }
+
+  emitChatEvent({ type: 'user_message', chatId: chatIdStr, agentId: effectiveAgentId, content: text, source: 'dashboard' });
   setProcessing(chatIdStr, true);
 
   try {
-    const sessionId = getSession(chatIdStr, AGENT_ID);
+    const sessionId = getSession(chatIdStr, effectiveAgentId);
 
-    const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, AGENT_ID);
+    const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, effectiveAgentId);
     const dashParts: string[] = [];
-    if (agentSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+    if (effectiveSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${effectiveSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
 
-    const recentDashTasks = getRecentTaskOutputs(AGENT_ID, 30);
+    const recentDashTasks = getRecentTaskOutputs(effectiveAgentId, 30);
     if (recentDashTasks.length > 0) {
       const taskLines = recentDashTasks.map((t) => {
         const ago = Math.round((Date.now() / 1000 - t.last_run) / 60);
@@ -1637,7 +1678,7 @@ async function processDashboardMessage(
     const fullMessage = dashParts.join('\n\n');
 
     const onProgress = (event: AgentProgressEvent) => {
-      emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
+      emitChatEvent({ type: 'progress', chatId: chatIdStr, agentId: effectiveAgentId, description: event.description });
     };
 
     const abortCtrl = new AbortController();
@@ -1652,10 +1693,10 @@ async function processDashboardMessage(
       sessionId,
       () => {}, // no typing action for dashboard
       onProgress,
-      agentDefaultModel,
+      effectiveModel,
       abortCtrl,
       undefined, // no streaming for dashboard
-      agentMcpAllowlist,
+      effectiveMcpAllowlist,
     );
 
     clearTimeout(dashTimeout);
@@ -1666,18 +1707,18 @@ async function processDashboardMessage(
       const msg = result.text === null
         ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
         : 'Stopped.';
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, agentId: effectiveAgentId, content: msg, source: 'dashboard' });
       return;
     }
 
     if (result.newSessionId) {
-      setSession(chatIdStr, result.newSessionId, AGENT_ID);
+      setSession(chatIdStr, result.newSessionId, effectiveAgentId);
     }
 
     const rawResponse = result.text?.trim() || 'Done.';
 
     // Save conversation turn
-    saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
+    saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, effectiveAgentId);
     if (dashSurfacedIds.length > 0) {
       void evaluateMemoryRelevance(dashSurfacedIds, dashSummaries, text, rawResponse).catch(() => {});
     }
@@ -1691,7 +1732,7 @@ async function processDashboardMessage(
 
     // Emit assistant response to SSE clients
     if (cleanedForChat) {
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: cleanedForChat, source: 'dashboard' });
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, agentId: effectiveAgentId, content: cleanedForChat, source: 'dashboard' });
     }
     // Emit one assistant_photo per http(s) photo URL the agent referenced.
     // Filesystem paths (the standard for Telegram-bound files) are skipped
@@ -1702,6 +1743,7 @@ async function processDashboardMessage(
       emitChatEvent({
         type: 'assistant_photo',
         chatId: chatIdStr,
+        agentId: effectiveAgentId,
         url: f.filePath,
         caption: f.caption,
         source: 'dashboard',
@@ -1713,7 +1755,11 @@ async function processDashboardMessage(
     // NOT bubble Telegram's raw error description into the chat feed.
     // The dashboard already received the assistant message via SSE
     // above; the Telegram leg is best-effort.
-    if (responseText) {
+    //
+    // Skip the relay when the user is chatting with a sub-agent in the
+    // dashboard — they aren't expecting the conversation to spill into
+    // their main Telegram chat.
+    if (responseText && !isSubAgent) {
       try {
         for (const part of splitMessage(formatForTelegram(responseText))) {
           await botApi.sendMessage(parseInt(chatIdStr), part, { parse_mode: 'HTML' });
@@ -1727,6 +1773,7 @@ async function processDashboardMessage(
           emitChatEvent({
             type: 'error',
             chatId: chatIdStr,
+            agentId: effectiveAgentId,
             content: 'Telegram relay skipped: this bot token is not authorized. Update TELEGRAM_BOT_TOKEN in Settings or re-issue with @BotFather.',
           });
         } else {
@@ -1734,6 +1781,7 @@ async function processDashboardMessage(
           emitChatEvent({
             type: 'error',
             chatId: chatIdStr,
+            agentId: effectiveAgentId,
             content: 'Could not relay reply to Telegram. The dashboard reply above is current.',
           });
         }
@@ -1753,7 +1801,7 @@ async function processDashboardMessage(
           result.usage.lastCallCacheRead + result.usage.lastCallInputTokens,
           result.usage.totalCostUsd,
           result.usage.didCompact,
-          AGENT_ID,
+          effectiveAgentId,
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');
@@ -1762,7 +1810,7 @@ async function processDashboardMessage(
   } catch (err) {
     setActiveAbort(chatIdStr, null);
     logger.error({ err }, 'Dashboard message processing error');
-    emitChatEvent({ type: 'error', chatId: chatIdStr, content: 'Something went wrong. Check the logs.' });
+    emitChatEvent({ type: 'error', chatId: chatIdStr, agentId: effectiveAgentId, content: 'Something went wrong. Check the logs.' });
   } finally {
     setProcessing(chatIdStr, false);
   }

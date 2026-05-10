@@ -93,17 +93,32 @@ export function Chat() {
   // Subscribe to the global chat SSE (started in main.tsx). The page just
   // reads the events; the stream itself stays open for the whole app
   // lifecycle so the sidebar unread badge keeps tracking.
+  //
+  // Filter by agent tab: 'all' shows every event; a specific agent shows
+  // only that agent's events. Events with no `agentId` (e.g. older
+  // Telegram-originated events from main, or processing/progress events
+  // emitted from setProcessing without an agent tag) are shown when the
+  // active tab is 'all' or the main agent — backwards-compatible with
+  // any pre-tagging traffic.
   useEffect(() => {
     resetUnread();
+    function matchesActiveAgent(data: any): boolean {
+      if (activeAgent === 'all') return true;
+      if (data?.agentId === undefined) return activeAgent === 'main';
+      return data.agentId === activeAgent;
+    }
     const unsub = subscribeChatStream((eventName, data) => {
       if (eventName === 'user_message') {
+        if (!matchesActiveAgent(data)) return;
         setTurns((prev) => [...prev, { role: 'user', content: data.content, source: data.source }]);
       } else if (eventName === 'assistant_message') {
+        if (!matchesActiveAgent(data)) return;
         setTurns((prev) => [...prev, { role: 'assistant', content: data.content, source: data.source }]);
         setProcessing(false); setProgressLabel(null);
         health.refresh();
         if (activeAgent !== 'all') agentTokens.refresh();
       } else if (eventName === 'assistant_photo') {
+        if (!matchesActiveAgent(data)) return;
         // Inline photo bubble. The bot already stripped the marker from
         // the text-side assistant_message; this event carries the URL.
         setTurns((prev) => [...prev, {
@@ -114,11 +129,16 @@ export function Chat() {
           photoCaption: data.caption,
         }]);
       } else if (eventName === 'processing') {
+        // Processing/progress events aren't agent-tagged today (emitted
+        // by setProcessing in src/state.ts). Show them regardless so
+        // the typing indicator still appears for the active agent.
         if (data.processing !== undefined) setProcessing(!!data.processing);
         if (!data.processing) setProgressLabel(null);
       } else if (eventName === 'progress') {
+        if (!matchesActiveAgent(data)) return;
         if (data.description) setProgressLabel(data.description);
       } else if (eventName === 'error') {
+        if (!matchesActiveAgent(data)) return;
         setTurns((prev) => [...prev, { role: 'assistant', content: data.content || 'Error' }]);
         setProcessing(false); setProgressLabel(null);
       }
@@ -131,7 +151,12 @@ export function Chat() {
     if (!message) return;
     setSending(true); setError(null);
     try {
-      const res = await apiPost<{ ok?: boolean; error?: string }>('/api/chat/send', { message });
+      // Only forward agentId when the user has picked a specific
+      // sub-agent tab. 'all' (the default tab) preserves the existing
+      // main-agent + Telegram-relay path on the server.
+      const body: { message: string; agentId?: string } =
+        activeAgent !== 'all' ? { message, agentId: activeAgent } : { message };
+      const res = await apiPost<{ ok?: boolean; error?: string }>('/api/chat/send', body);
       if (!res.ok && res.error) {
         setError(res.error === 'busy' ? 'A turn is already in flight. Wait for it to finish.' : res.error);
       } else if (!textOverride) {
@@ -237,7 +262,11 @@ export function Chat() {
                   if (draft.trim()) void send();
                 }
               }}
-              placeholder="Type a message. Shift+Enter for newline."
+              placeholder={
+                activeAgent === 'all'
+                  ? 'Type a message. Shift+Enter for newline.'
+                  : `Message ${activeAgentObj?.name || activeAgent}. Shift+Enter for newline.`
+              }
               rows={1}
               class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[13px] outline-none focus:border-[var(--color-accent)] resize-none max-h-32"
             />

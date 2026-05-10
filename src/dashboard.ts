@@ -2907,12 +2907,28 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json({ turns });
   });
 
-  // Send message from dashboard
+  // Send message from dashboard.
+  //
+  // `agentId` selects which agent runs the turn. Omitted, or set to
+  // 'main' / 'all', uses the main agent (with the existing Telegram
+  // relay). A specific sub-agent id (validated via agentExists) routes
+  // the turn to that agent — its own system prompt, model, MCP
+  // allowlist — and skips the Telegram relay, so the conversation
+  // stays inside the dashboard.
   app.post('/api/chat/send', async (c) => {
     if (!botApi) return c.json({ error: 'Bot API not available' }, 503);
-    const body = await c.req.json<{ message?: string }>();
+    const body = await c.req.json<{ message?: string; agentId?: string }>();
     const message = body?.message?.trim();
     if (!message) return c.json({ error: 'message required' }, 400);
+
+    let targetAgentId: string | undefined;
+    const requestedAgentId = body?.agentId?.trim();
+    if (requestedAgentId && requestedAgentId !== 'main' && requestedAgentId !== 'all') {
+      if (!agentExists(requestedAgentId)) {
+        return c.json({ error: 'unknown agent', agentId: requestedAgentId }, 400);
+      }
+      targetAgentId = requestedAgentId;
+    }
 
     // Reject if a turn is already in flight. Without this guard, rapid
     // clicks (or a scripted token holder) can stack N agent invocations,
@@ -2922,7 +2938,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
 
     // Fire-and-forget: response comes via SSE
-    void processMessageFromDashboard(botApi, message);
+    void processMessageFromDashboard(botApi, message, targetAgentId);
     return c.json({ ok: true });
   });
 
